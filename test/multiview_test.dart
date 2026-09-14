@@ -174,8 +174,11 @@ class _FakeDanmaku extends LiveDanmaku {
 }
 
 /// 测试装配体：假工厂 + 假解析器 + 可控的解析门闩。
+///
+/// [perCellMode] 缺省为 false，保持历史「音频焦点互斥 + 单弹幕会话」行为，
+/// 使既有断言无需改动；逐格模式（生产环境仅 Windows 启用）单列一组用例覆盖。
 class _Harness {
-  _Harness({int? maxCellCount}) {
+  _Harness({int? maxCellCount, bool perCellMode = false}) {
     controller = MultiviewController(
       playerFactory: _factory,
       streamResolver: _resolver,
@@ -186,6 +189,7 @@ class _Harness {
         savedRoomVolumes[_volumeKey(room)] = volume;
       },
       maxCellCount: maxCellCount,
+      perCellMode: perCellMode,
     );
   }
 
@@ -1321,6 +1325,155 @@ void main() {
       expect(controller.cells[0].lineIndex, 1);
       expect(controller.cells[0].lines.length, 2);
       expect(harness.log.last, contains('流畅?line=1'));
+    });
+  });
+
+  group('MultiviewController 逐格模式（Windows 增强）', () {
+    test('perCellMode 缺省关闭，保持单会话与音频焦点互斥', () async {
+      final harness = _Harness();
+      final controller = harness.controller;
+      expect(controller.perCellMode, isFalse);
+      expect(controller.danmakuEnabled.value, isFalse);
+
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      expect(harness.players[0].volume, 0.0);
+      expect(harness.players[1].volume, 1.0);
+    });
+
+    test('默认开启逐格弹幕，各格各自建立会话', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      controller.onInit();
+      expect(controller.danmakuEnabled.value, isTrue);
+
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+
+      expect(harness.danmakuEngines['r1']!.log, contains('dm0:start'));
+      expect(harness.danmakuEngines['r2']!.log, contains('dm1:start'));
+
+      // 关闭总开关：所有格一并断开。
+      controller.danmakuEnabled.value = false;
+      await harness.pump();
+      expect(harness.danmakuEngines['r1']!.log, contains('dm0:stop'));
+      expect(harness.danmakuEngines['r2']!.log, contains('dm1:stop'));
+    });
+
+    test('每格弹幕渲染入口彼此独立', () {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      expect(controller.barrageControllerFor(0), isNotNull);
+      expect(identical(controller.barrageControllerFor(0), controller.barrageControllerFor(1)), isFalse);
+      expect(controller.barrageControllerFor(9), isNull);
+    });
+
+    test('assignRoom 后所有格同时出声，不再互斥静音', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+
+      expect(harness.players[0].volume, 1.0);
+      expect(harness.players[1].volume, 1.0);
+      expect(harness.players[0].muted, isFalse);
+      expect(harness.players[1].muted, isFalse);
+    });
+
+    test('切换音频焦点不再静音其他格', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+
+      controller.setAudioFocus(0);
+      await harness.pump();
+
+      expect(controller.audioFocusIndex, 0);
+      expect(harness.players[0].volume, 1.0);
+      expect(harness.players[1].volume, 1.0, reason: '逐格模式下声源不再互斥');
+    });
+
+    test('每格音量独立可调且互不影响', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+
+      await controller.setCellVolume(0, 0.3);
+
+      expect(controller.cellVolume(0), 0.3);
+      expect(harness.players[0].volume, 0.3);
+      expect(harness.players[1].volume, 1.0, reason: '调一格音量不得影响其他格');
+    });
+
+    test('一键静音覆盖全部格，恢复后各格按自己的音量出声', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await controller.setCellVolume(0, 0.4);
+      await harness.pump();
+
+      await controller.setAllMuted(true);
+      expect(harness.players[0].volume, 0.0);
+      expect(harness.players[1].volume, 0.0);
+
+      await controller.setAllMuted(false);
+      expect(harness.players[0].volume, 0.4);
+      expect(harness.players[1].volume, 1.0);
+    });
+
+    test('移除一格只断开该格弹幕会话', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      controller.onInit();
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+      expect(harness.danmakuEngines['r2']!.log, contains('dm1:start'));
+
+      controller.removeCell(0);
+      await harness.pump();
+
+      expect(harness.danmakuEngines['r1']!.log, contains('dm0:stop'));
+      expect(harness.danmakuEngines['r2']!.log, isNot(contains('dm1:stop')));
+    });
+
+    test('不支持弹幕的格不建立会话，其余格不受影响', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      controller.onInit();
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, LiveRoom(roomId: 'ks1', platform: 'kuaishou'));
+      await harness.pump();
+
+      expect(harness.danmakuEngines['r1']!.log, contains('dm0:start'));
+      expect(harness.danmakuEngines['ks1'], isNull);
+    });
+
+    test('缩容后各格仍维持逐格出声', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      for (var i = 0; i < 4; i++) {
+        await controller.assignRoom(i, _room('r$i'));
+      }
+      await harness.pump();
+      harness.log.clear();
+
+      await controller.setLayout(MultiviewLayout.dual);
+      await harness.pump();
+
+      // 前两格保留并继续出声；后两格走统一释放路径。
+      expect(harness.players[0].volume, 1.0);
+      expect(harness.players[1].volume, 1.0);
+      for (final name in ['p2', 'p3']) {
+        expect(harness.log.where((e) => e.startsWith('$name:')), contains('$name:pDispose'));
+      }
     });
   });
 }

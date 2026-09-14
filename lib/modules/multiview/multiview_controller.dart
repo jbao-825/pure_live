@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+
 import 'package:pure_live/common/index.dart';
 import 'package:flame_barrage/flame_barrage.dart';
 import 'package:pure_live/model/live_play_quality.dart';
@@ -13,7 +14,6 @@ import 'package:pure_live/modules/multiview/models/multiview_models.dart';
 import 'package:pure_live/modules/multiview/cells/multiview_cell_player.dart';
 import 'package:pure_live/modules/live_play/controllers/player_controller.dart';
 import 'package:pure_live/modules/multiview/danmaku/multiview_danmaku_session.dart';
-
 
 /// 房间对象 → 可播放源解析器。
 ///
@@ -56,13 +56,15 @@ class MultiviewController extends GetxController {
     MultiviewRoomVolumeLoader? roomVolumeLoader,
     MultiviewRoomVolumeSaver? roomVolumeSaver,
     int? maxCellCount,
+    bool? perCellMode,
   }) : _playerFactory = playerFactory ?? _defaultPlayerFactory,
        _siteFor = siteFor ?? Sites.of,
        _pauseGlobalPlayback = pauseGlobalPlayback ?? _defaultPauseGlobalPlayback,
        _danmakuEngineFactory = danmakuEngineFactory ?? _defaultDanmakuEngineFactory,
        _roomVolumeLoader = roomVolumeLoader ?? _defaultRoomVolumeLoader,
        _roomVolumeSaver = roomVolumeSaver ?? _defaultRoomVolumeSaver,
-       maxCellCount = maxCellCount ?? (PlatformUtils.isDesktop ? maxCells : MultiviewLayout.focus.capacity) {
+       maxCellCount = maxCellCount ?? (PlatformUtils.isDesktop ? maxCells : MultiviewLayout.focus.capacity),
+       perCellMode = perCellMode ?? PlatformUtils.isWindows {
     if (this.maxCellCount < MultiviewLayout.focus.capacity || this.maxCellCount > maxCells) {
       throw ArgumentError.value(this.maxCellCount, 'maxCellCount', 'must be between 4 and $maxCells');
     }
@@ -78,6 +80,17 @@ class MultiviewController extends GetxController {
   /// Effective decoder cap. Mobile remains at four simultaneous cells while
   /// desktop can expand the focus rail to [maxCells].
   final int maxCellCount;
+
+  /// 逐格独立模式：Windows 上启用「每格独立弹幕会话 + 多格同时出声 +
+  /// 逐格播放控制条」，其他平台保持既有单声源/单弹幕会话体验不变。
+  ///
+  /// 默认按平台派生（[PlatformUtils.isWindows]）；测试显式注入即可分别覆盖
+  /// 两套行为。它同时决定三件事：
+  /// - 音量：true 时只由 [allMuted] 决定静音，各格互不影响、可同时出声；
+  ///   false 时维持音频焦点互斥（只有焦点格出声）。
+  /// - 弹幕：true 时每格各自持有会话与渲染入口；false 时只有所选格连接。
+  /// - 页面交互：true 时点按格子呼出该格控制条，false 时维持晋升/切焦点。
+  final bool perCellMode;
 
   /// 生产环境每格播放器工厂。
   static MultiviewCellPlayerHandle _defaultPlayerFactory({required int renderWidth, required int renderHeight}) {
@@ -307,15 +320,25 @@ class MultiviewController extends GetxController {
   /// 晋升不换流）。
   final RxBool smallCellsLowQuality = false.obs;
 
-  /// multiview 页级弹幕开关，默认关。
+  /// multiview 页级弹幕总开关。
   ///
-  /// 用户决策：只有大画面开弹幕；本开关同时控制显隐与连接。
-  final RxBool danmakuEnabled = false.obs;
+  /// 逐格模式（Windows）默认开启：进入页面并起播后各格立即连接弹幕。
+  /// 非逐格模式维持默认关，由用户手动开启后只连接所选格。
+  /// 本开关同时控制显隐与连接。
+  late final RxBool danmakuEnabled = perCellMode.obs;
 
-  /// 大画面弹幕渲染入口：UI 直接接 FlameBarrageWidget(controller: ...)。
+  /// 每格弹幕渲染入口：UI 直接接 FlameBarrageWidget(controller: ...)。
   ///
   /// 会话过滤后的聊天消息经 [BarrageItem] 注入；样式/速度调优归 UI 层。
-  final BarrageController barrageController = BarrageController();
+  /// 与 [cells] 平行维护（setLayout/addCell 同步增删）。
+  late final List<BarrageController> _barrageControllers = List<BarrageController>.generate(
+    MultiviewLayout.quad.capacity,
+    (_) => BarrageController(),
+  );
+
+  /// 指定格的弹幕渲染控制器；越界返回 null（缩容后 UI 仍可能短暂引用旧下标）。
+  BarrageController? barrageControllerFor(int index) =>
+      index >= 0 && index < _barrageControllers.length ? _barrageControllers[index] : null;
 
   final MultiviewCellPlayerFactory _playerFactory;
   final MultiviewStreamResolver? _streamResolver;
@@ -340,11 +363,21 @@ class MultiviewController extends GetxController {
   final MultiviewRoomVolumeLoader _roomVolumeLoader;
   final MultiviewRoomVolumeSaver _roomVolumeSaver;
 
-  /// 大画面弹幕会话：异常自容错（记日志不外抛），绝不影响播放主链路。
-  late final MultiviewDanmakuSession _danmakuSession = MultiviewDanmakuSession(
-    engineFactory: _danmakuEngineFactory,
-    onChatMessage: _forwardChatMessage,
+  /// 每格弹幕会话：异常自容错（记日志不外抛），绝不影响播放主链路。
+  ///
+  /// 与 [cells] 平行维护。逐格模式下每格各自连接；非逐格模式下只有
+  /// 所选格连接（见 [_syncDanmakuSessions]），与原单会话行为等价。
+  late final List<MultiviewDanmakuSession> _danmakuSessions = List<MultiviewDanmakuSession>.generate(
+    MultiviewLayout.quad.capacity,
+    _createDanmakuSession,
   );
+
+  MultiviewDanmakuSession _createDanmakuSession(int index) {
+    return MultiviewDanmakuSession(
+      engineFactory: _danmakuEngineFactory,
+      onChatMessage: (message) => _forwardChatMessage(index, message),
+    );
+  }
 
   /// 响应式监听（onInit 注册，onClose 释放）：弹幕生命周期 + 降质开关 reconcile。
   final List<Worker> _rxWorkers = <Worker>[];
@@ -374,7 +407,7 @@ class MultiviewController extends GetxController {
     );
     // 弹幕会话跟随页级开关与大画面切换；房间变化由各变更点显式触发同步。
     _rxWorkers.add(
-      everAll([danmakuEnabled, layout, focusedCellIndex, _audioFocusIndex], (_) => unawaited(_syncDanmakuSession())),
+      everAll([danmakuEnabled, layout, focusedCellIndex, _audioFocusIndex], (_) => unawaited(_syncDanmakuSessions())),
     );
     // 降质开关切换后即时 reconcile 在播小格，避免开关只影响后续分配。
     _rxWorkers.add(ever(smallCellsLowQuality, (_) => unawaited(_reconcileSmallCellQualities())));
@@ -397,6 +430,13 @@ class MultiviewController extends GetxController {
     }
   }
 
+  /// 某格在当前设置下是否应静音（唯一的静音判定入口）。
+  ///
+  /// 非逐格模式：音频焦点互斥——除焦点格外全部静音。
+  /// 逐格模式（Windows）：[allMuted] 是唯一静音来源，各格互不影响，
+  /// 因而所有格可同时出声，且每格音量独立生效。
+  bool _shouldMute(int index) => allMuted.value || (!perCellMode && index != _audioFocusIndex.value);
+
   Future<void> toggleMuteAll() => setAllMuted(!allMuted.value);
   Future<void> setAllMuted(bool muted) async {
     allMuted.value = muted;
@@ -406,7 +446,7 @@ class MultiviewController extends GetxController {
       if (handle == null) continue;
 
       try {
-        await handle.setMuted(muted || index != _audioFocusIndex.value);
+        await handle.setMuted(_shouldMute(index));
       } catch (error, stackTrace) {
         developer.log(
           'MultiviewController: failed to set mute for cell $index',
@@ -418,9 +458,9 @@ class MultiviewController extends GetxController {
     }
   }
 
-  void _forwardChatMessage(LiveMessage message) {
+  void _forwardChatMessage(int index, LiveMessage message) {
     // 与 live_play 的弹幕上屏同构：仅注入内容与颜色，速度等样式归 UI 层。
-    barrageController.send(
+    barrageControllerFor(index)?.send(
       BarrageItem(
         content: message.message,
         userId: message.userId,
@@ -436,27 +476,44 @@ class MultiviewController extends GetxController {
     return selected.clamp(0, cells.length - 1);
   }
 
-  /// 按当前开关/布局/所选房间同步弹幕会话（幂等）。
+  /// 按当前开关/布局/房间同步各格弹幕会话（幂等）。
   ///
-  /// focus 布局的目标是大画面；1×1/1×2/2×2 的目标是当前声音来源格。
-  /// 因而顶部弹幕按钮在所有布局中都有明确、唯一且可见的渲染目标。
-  Future<void> _syncDanmakuSession() async {
-    try {
-      final room = danmakuEnabled.value && cells.isNotEmpty ? cells[_selectedCellIndex].room : null;
-      if (room == null || !MultiviewDanmakuSession.supportsRoom(room)) {
-        await _danmakuSession.disconnect();
-        return;
+  /// 逐格模式：每格按自己的房间独立连接/断开。
+  /// 非逐格模式：只有 [_selectedCellIndex] 一格连接——focus 布局下为大画面，
+  /// 1×1/1×2/2×2 下为当前声音来源格，与原单会话行为等价。
+  Future<void> _syncDanmakuSessions() async {
+    final enabled = danmakuEnabled.value;
+    for (var index = 0; index < cells.length && index < _danmakuSessions.length; index++) {
+      try {
+        final targeted = perCellMode || index == _selectedCellIndex;
+        final room = enabled && targeted ? cells[index].room : null;
+        final session = _danmakuSessions[index];
+        if (room == null || !MultiviewDanmakuSession.supportsRoom(room)) {
+          await session.disconnect();
+          continue;
+        }
+        await session.connect(room);
+      } catch (error, stackTrace) {
+        // 弹幕故障不得影响播放主链路：记录后会话自身状态已由其内部回滚。
+        developer.log(
+          'MultiviewController: danmaku session sync failed for cell $index',
+          name: 'MultiviewController',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }
-      await _danmakuSession.connect(room);
-    } catch (error, stackTrace) {
-      // 弹幕故障不得影响播放主链路：记录后会话自身状态已由其内部回滚。
-      developer.log(
-        'MultiviewController: danmaku session sync failed',
-        name: 'MultiviewController',
-        error: error,
-        stackTrace: stackTrace,
-      );
     }
+  }
+
+  /// 该格当前是否应渲染弹幕层（开关 + 状态 + 目标格三重判定）。
+  ///
+  /// UI 每次 build 读取；内部读 Rx 使调用方的 Obx 自动订阅开关与格状态。
+  bool shouldRenderDanmaku(int index) {
+    if (!danmakuEnabled.value) return false;
+    if (index < 0 || index >= cells.length) return false;
+    final cell = cells[index];
+    if (cell.status != MultiviewCellStatus.playing || cell.videoController == null) return false;
+    return perCellMode || index == _selectedCellIndex;
   }
 
   /// 切换布局。
@@ -477,13 +534,19 @@ class MultiviewController extends GetxController {
       cells.removeLast();
       _players.removeLast();
       _cellEpochs.removeLast();
+      // 缩容后该 slot 不再存在：断开其弹幕会话并清空残留弹幕。
+      unawaited(_danmakuSessions.removeLast().disconnect());
+      _barrageControllers.removeLast().clear();
     }
     while (cells.length < capacity) {
-      cells.add(MultiviewCellState.empty(cells.length));
+      final index = cells.length;
+      cells.add(MultiviewCellState.empty(index));
       _players.add(null);
       _cellEpochs.add(0);
       playingFlags.add(false);
       _playingSubs.add(null);
+      _danmakuSessions.add(_createDanmakuSession(index));
+      _barrageControllers.add(BarrageController());
     }
 
     layout.value = newLayout;
@@ -506,7 +569,7 @@ class MultiviewController extends GetxController {
     }
 
     // 布局变化可能改变大画面格（进入/离开 focus），同步弹幕会话。
-    unawaited(_syncDanmakuSession());
+    unawaited(_syncDanmakuSessions());
   }
 
   /// focus 布局下追加一个空白小格（动态容量，滚动呈现由 UI 层负责）。
@@ -519,11 +582,14 @@ class MultiviewController extends GetxController {
     if (!canAddCell) {
       throw StateError('multiview: cell limit reached ($maxCellCount)');
     }
-    cells.add(MultiviewCellState.empty(cells.length));
+    final index = cells.length;
+    cells.add(MultiviewCellState.empty(index));
     _players.add(null);
     _cellEpochs.add(0);
     playingFlags.add(false);
     _playingSubs.add(null);
+    _danmakuSessions.add(_createDanmakuSession(index));
+    _barrageControllers.add(BarrageController());
   }
 
   /// focus 布局下把 [cellIndex] 格晋升为大画面。
@@ -681,7 +747,7 @@ class MultiviewController extends GetxController {
     // A cell assigned while mute-all is engaged must not become the sole
     // audible exception. Establish its mute state before it can take focus.
     try {
-      await handle.setMuted(allMuted.value || cellIndex != _audioFocusIndex.value);
+      await handle.setMuted(_shouldMute(cellIndex));
     } catch (error, stackTrace) {
       developer.log(
         'MultiviewController: initial mute setup failed for cell $cellIndex',
@@ -721,7 +787,7 @@ class MultiviewController extends GetxController {
       await setAudioFocus(cellIndex);
     }
     // 大画面房间可能已变化，同步弹幕会话（幂等）。
-    unawaited(_syncDanmakuSession());
+    unawaited(_syncDanmakuSessions());
   }
 
   Future<void> setCellMuted(int cellIndex, bool muted) async {
@@ -959,7 +1025,7 @@ class MultiviewController extends GetxController {
       unawaited(_teardown(handle));
     }
     // 大画面格可能被关闭或焦点转移，同步弹幕会话（幂等）。
-    unawaited(_syncDanmakuSession());
+    unawaited(_syncDanmakuSessions());
   }
 
   /// 切换音频焦点：仅目标格出声，其余全部静音。
@@ -983,7 +1049,7 @@ class MultiviewController extends GetxController {
       final handle = _players[index];
       if (handle == null) continue;
 
-      final muted = allMuted.value || index != targetIndex;
+      final muted = _shouldMute(index);
 
       try {
         await handle.setMuted(muted);
@@ -1024,7 +1090,12 @@ class MultiviewController extends GetxController {
     focusedCellIndex.value = 0;
 
     // 弹幕会话先行断开：网络栈清理与播放器销毁互不依赖。
-    unawaited(_danmakuSession.disconnect());
+    for (final session in _danmakuSessions) {
+      unawaited(session.disconnect());
+    }
+    for (final barrage in _barrageControllers) {
+      barrage.clear();
+    }
 
     for (final handle in handles) {
       try {
@@ -1070,7 +1141,7 @@ class MultiviewController extends GetxController {
     // 大画面解析/起播失败时其房间状态已不可用，同步弹幕会话
     // （幂等入口：健康同键会话保持，失效则按当前大画面房间按需重连）。
     if (cellIndex == _selectedCellIndex) {
-      unawaited(_syncDanmakuSession());
+      unawaited(_syncDanmakuSessions());
     }
   }
 
@@ -1087,7 +1158,7 @@ class MultiviewController extends GetxController {
         clearQuality: true,
       ),
     );
-    unawaited(_syncDanmakuSession());
+    unawaited(_syncDanmakuSessions());
   }
 
   /// 统一释放路径：捕获句柄置空 → pause → 销毁播放内核
@@ -1108,6 +1179,11 @@ class MultiviewController extends GetxController {
     _playingSubs[cellIndex] = null;
     if (cellIndex < playingFlags.length) {
       playingFlags[cellIndex] = false;
+    }
+    // 该格已无房间：断开其弹幕会话并清空渲染残留，避免换房后旧弹幕串场。
+    if (cellIndex < _danmakuSessions.length) {
+      unawaited(_danmakuSessions[cellIndex].disconnect());
+      _barrageControllers[cellIndex].clear();
     }
     _updateCell(cellIndex, MultiviewCellState.empty(cellIndex));
     return handle;

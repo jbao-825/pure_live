@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:remixicon/remixicon.dart';
 import 'package:pure_live/common/index.dart';
@@ -16,7 +18,6 @@ import 'package:pure_live/modules/multiview/widgets/multiview_room_picker.dart';
 import 'package:pure_live/modules/live_play/widgets/layout/live_play_back_scope.dart';
 import 'package:pure_live/modules/multiview/widgets/multiview_fullscreen_surface.dart';
 import 'package:pure_live/modules/multiview/danmaku/multiview_danmaku_settings_binding.dart';
-
 
 /// 页面显示状态机：normal（完整界面）→ immersive（隐藏工具条与侧板，
 /// 留悬浮恢复钮）→ fullscreen（仅保留安全区内的退出钮）。
@@ -55,15 +56,20 @@ class _MultiviewPageState extends State<MultiviewPage> {
   /// 视觉节奏一致），追加格滚动呈现。
   static const int _focusSmallViewportCells = 3;
 
+  /// 音量步进（滚轮 / 方向键）：5% 一档。
+  static const double _volumeStep = 0.05;
+
   /// 当前显示模式；仅 chrome 显隐差异，见 [_DisplayMode]。
   _DisplayMode _displayMode = _DisplayMode.normal;
 
   /// 安全退出进行中标志：防止连按返回/Esc 重复触发退出序列。
   bool _exiting = false;
 
-  /// focus 大画面底部控制条显隐；点击大画面切换（对齐 live_play
-  /// 点按呼出控制条的交互），晋升/切布局时复位隐藏。
-  bool _largeControlsVisible = false;
+  /// 每格播放控制条的显隐集合；点击格子切换（对齐 live_play 点按呼出
+  /// 控制条的交互），晋升/切布局/换房时复位。
+  ///
+  /// 逐格模式（Windows）下每格各自独立；非逐格模式仅 focus 大格会用到。
+  final Set<int> _controlsVisible = <int>{};
 
   /// 选台面板当前的目标格下标。
   int _targetCell = 0;
@@ -138,11 +144,60 @@ class _MultiviewPageState extends State<MultiviewPage> {
   }
 
   bool _handleGlobalKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent || event.logicalKey != LogicalKeyboardKey.escape) return false;
-    if (!mounted || _displayMode == _DisplayMode.normal) return false;
-    if (ModalRoute.of(context)?.isCurrent != true) return false;
-    unawaited(_changeDisplayMode(_DisplayMode.normal));
-    return true;
+    if (event is! KeyDownEvent) return false;
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return false;
+
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      if (_displayMode == _DisplayMode.normal) return false;
+      unawaited(_changeDisplayMode(_DisplayMode.normal));
+      return true;
+    }
+    // 播放类快捷键仅逐格模式（Windows）提供，且作用于当前选中格。
+    if (!controller.perCellMode) return false;
+    return _handlePlaybackKey(event);
+  }
+
+  /// 桌面播放快捷键：与 live_play 的 VideoKeyboardShortcuts 对齐
+  /// （空格播放/暂停、R 刷新、上下键调音量），作用域为当前选中格。
+  ///
+  /// 输入框持有焦点时一律放行：选台搜索框里的空格/方向键属于文本编辑。
+  bool _handlePlaybackKey(KeyEvent event) {
+    if (_isTextInputFocused()) return false;
+    final index = controller.audioFocusIndex;
+    if (index < 0 || index >= controller.cells.length) return false;
+    if (controller.cells[index].status != MultiviewCellStatus.playing) return false;
+
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.space:
+        unawaited(controller.toggleCellPlayPause(index));
+        return true;
+      case LogicalKeyboardKey.keyR:
+        final room = controller.cells[index].room;
+        if (room != null) unawaited(controller.assignRoom(index, room));
+        return true;
+      case LogicalKeyboardKey.arrowUp:
+        unawaited(_stepCellVolume(index, _volumeStep));
+        return true;
+      case LogicalKeyboardKey.arrowDown:
+        unawaited(_stepCellVolume(index, -_volumeStep));
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bool _isTextInputFocused() {
+    final focusContext = FocusManager.instance.primaryFocus?.context;
+    return focusContext != null && focusContext.widget is EditableText;
+  }
+
+  /// 把该格音量在当前值上步进 [delta] 并钳制到 0.0-1.0。
+  ///
+  /// 多画面每格走 mpv 增益且不启用桌面端 100%-150% 突破：多路同时出声时
+  /// 额外增益会显著抬高削波风险，故这里恒定封顶 100%。
+  Future<void> _stepCellVolume(int index, double delta) {
+    final next = (controller.cellVolume(index) + delta).clamp(0.0, 1.0);
+    return controller.setCellVolume(index, next);
   }
 
   /// 切换显示模式，并在 normal↔fullscreen 边界同步系统级全屏。
@@ -219,8 +274,11 @@ class _MultiviewPageState extends State<MultiviewPage> {
   void _pickRoom(LiveRoom room) {
     // 防御性钳制：布局切换与选台回调竞态时，提交下标必须仍在当前容量内。
     final target = _targetCell.clamp(0, controller.cells.length - 1);
+    // 换台后收起该格控制条：新房间应回到干净的播放画面。
+    _controlsVisible.remove(target);
     unawaited(controller.assignRoom(target, room));
     _advanceTarget(target);
+    setState(() {});
   }
 
   void _openPickerFor(int cellIndex, {required bool isWide}) {
@@ -252,6 +310,13 @@ class _MultiviewPageState extends State<MultiviewPage> {
         _displayMode == _DisplayMode.normal;
     final hasQuality =
         state.status == MultiviewCellStatus.playing && state.qualities.isNotEmpty && state.qualityLoader != null;
+    // 逐格模式下点按让位给控制条，晋升改由本菜单提供入口（仅一大多小、
+    // 且目标不是当前大画面时可用）。
+    final canPromote =
+        controller.perCellMode &&
+        controller.layout.value == MultiviewLayout.focus &&
+        controller.focusedCellIndex.value != state.index &&
+        state.status == MultiviewCellStatus.playing;
     showModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => SafeArea(
@@ -266,6 +331,16 @@ class _MultiviewPageState extends State<MultiviewPage> {
                 _openPickerFor(state.index, isWide: isWide);
               },
             ),
+            if (canPromote)
+              ListTile(
+                leading: const Icon(Remix.focus_3_line),
+                title: Text(i18n('multiview_promote_cell')),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _controlsVisible.clear();
+                  unawaited(controller.promoteCell(state.index));
+                },
+              ),
             ListTile(
               leading: const Icon(Remix.equalizer_line),
               title: Text(i18n('select_quality')),
@@ -423,9 +498,8 @@ class _MultiviewPageState extends State<MultiviewPage> {
           selected: {layout},
           onSelectionChanged: (selection) {
             controller.setLayout(selection.first);
-            // Reset the control bar after switching layouts.
-            // Only focus layout has the large-cell control bar.
-            _largeControlsVisible = false;
+            // 切布局后复位全部控制条：格子下标含义已改变。
+            _controlsVisible.clear();
           },
           segments: const [
             ButtonSegment(value: MultiviewLayout.single, icon: Icon(Remix.aspect_ratio_line), label: Text('1×1')),
@@ -549,12 +623,10 @@ class _MultiviewPageState extends State<MultiviewPage> {
     return Obx(() {
       final layout = controller.layout.value;
       final cells = controller.cells;
-      // 在 Obx 内读取以建立订阅：晋升与弹幕开关变化即时驱动重绘。
+      // 在 Obx 内读取以建立订阅：晋升、声音来源与弹幕开关变化即时驱动重绘。
       final focused = controller.focusedCellIndex.value;
-      final audioFocus = controller.audioFocusIndexState.value;
-      final danmakuEnabled = controller.danmakuEnabled.value;
       final content = layout == MultiviewLayout.focus
-          ? _buildFocusLayout(cells, focused: focused, isWide: isWide, danmakuEnabled: danmakuEnabled)
+          ? _buildFocusLayout(cells, focused: focused, isWide: isWide)
           : Column(
               children: [
                 for (var row = 0; row < layout.rows; row++)
@@ -569,7 +641,7 @@ class _MultiviewPageState extends State<MultiviewPage> {
                                 cells,
                                 row * layout.columns + col,
                                 isWide: isWide,
-                                showDanmaku: danmakuEnabled && row * layout.columns + col == audioFocus,
+                                showDanmaku: controller.shouldRenderDanmaku(row * layout.columns + col),
                               ),
                             ),
                           ),
@@ -587,12 +659,7 @@ class _MultiviewPageState extends State<MultiviewPage> {
   /// 窄屏保持同一形态，不做上下变体。格子子树经 GlobalKey 搬移，
   /// 晋升切换只改变位置，不重建播放画面。小列首屏恰容纳
   /// [_focusSmallViewportCells] 格，追加格滚动呈现，列尾附「添加画面」槽。
-  Widget _buildFocusLayout(
-    List<MultiviewCellState> cells, {
-    required int focused,
-    required bool isWide,
-    required bool danmakuEnabled,
-  }) {
+  Widget _buildFocusLayout(List<MultiviewCellState> cells, {required int focused, required bool isWide}) {
     // 核心层已在缩容/释放时钳制 focusedCellIndex，此处再钳一次防竞态越界。
     final bigIndex = focused.clamp(0, cells.length - 1);
     final others = [
@@ -605,21 +672,13 @@ class _MultiviewPageState extends State<MultiviewPage> {
           flex: _focusBigFlex,
           child: Padding(
             padding: const EdgeInsets.all(3),
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: _buildCellAt(
-                    cells,
-                    bigIndex,
-                    isWide: isWide,
-                    showDanmaku: danmakuEnabled,
-                    // 控制条可见时隐藏左下角清晰度 chip：入口已在控制条内。
-                    showQualityEntry: !_largeControlsVisible,
-                  ),
-                ),
-                if (_largeControlsVisible)
-                  Positioned(left: 8, right: 8, bottom: 8, child: _buildLargeControlBar(cells, bigIndex)),
-              ],
+            child: _buildCellAt(
+              cells,
+              bigIndex,
+              isWide: isWide,
+              showDanmaku: controller.shouldRenderDanmaku(bigIndex),
+              // 控制条可见时隐藏左下角清晰度 chip：入口已在控制条内。
+              showQualityEntry: !_controlsVisible.contains(bigIndex),
             ),
           ),
         ),
@@ -642,7 +701,12 @@ class _MultiviewPageState extends State<MultiviewPage> {
                         height: extent,
                         child: Padding(
                           padding: const EdgeInsets.all(3),
-                          child: _buildCellAt(cells, index, isWide: isWide),
+                          child: _buildCellAt(
+                            cells,
+                            index,
+                            isWide: isWide,
+                            showDanmaku: controller.shouldRenderDanmaku(index),
+                          ),
                         ),
                       ),
                     if (canAdd)
@@ -663,79 +727,86 @@ class _MultiviewPageState extends State<MultiviewPage> {
     );
   }
 
-  /// 大画面底部控制条：按钮集对齐 live_play 底部栏——
+  /// 单格播放控制条：按钮集对齐 live_play 底部栏——
   /// 播放暂停、刷新、弹幕开关、弹幕设置、清晰度、线路、音量、全屏。
-  /// 点击大画面切换显隐（见 [_largeControlsVisible]）。
-  Widget _buildLargeControlBar(List<MultiviewCellState> cells, int bigIndex) {
-    final state = cells[bigIndex];
+  ///
+  /// 逐格模式（Windows）下每格都能呼出（见 [_controlsVisible]）；
+  /// 非逐格模式仅 focus 大格会显示。按钮用紧凑密度 + FittedBox 兜底缩放，
+  /// 保证一大多小的右侧窄列也不溢出。
+  Widget _buildCellControlBar(List<MultiviewCellState> cells, int index) {
+    final state = cells[index];
     final iconColor = Colors.white.withValues(alpha: 0.92);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(10)),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Obx(() {
-            final playing = controller.playingFlags[bigIndex];
-            return _controlBarButton(
-              icon: playing ? Remix.pause_line : Remix.play_line,
-              tooltip: i18n(playing ? 'multiview_pause' : 'multiview_play'),
-              onTap: () => unawaited(controller.toggleCellPlayPause(bigIndex)),
-            );
-          }),
-          _controlBarButton(
-            icon: Remix.refresh_line,
-            tooltip: i18n('multiview_refresh'),
-            onTap: () {
-              final room = state.room;
-              if (room != null) unawaited(controller.assignRoom(bigIndex, room));
-            },
-          ),
-          Obx(() {
-            final enabled = controller.danmakuEnabled.value;
-            return _controlBarButton(
-              icon: CustomIcons.danmaku_open,
-              tooltip: i18n('danmaku'),
-              iconColor: enabled ? Theme.of(context).colorScheme.primary : iconColor,
-              onTap: () => controller.danmakuEnabled.toggle(),
-            );
-          }),
-          _controlBarButton(
-            icon: Remix.settings_3_line,
-            tooltip: i18n('multiview_danmaku_settings'),
-            onTap: _showDanmakuSettings,
-          ),
-          _controlBarButton(
-            icon: Remix.hd_line,
-            tooltip: i18n('select_quality'),
-            onTap: () => _showQualitySheet(state),
-          ),
-          if (state.lines.length > 1)
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(10)),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Obx(() {
+              final playing = controller.playingFlags[index];
+              return _controlBarButton(
+                icon: playing ? Remix.pause_line : Remix.play_line,
+                tooltip: i18n(playing ? 'multiview_pause' : 'multiview_play'),
+                onTap: () => unawaited(controller.toggleCellPlayPause(index)),
+              );
+            }),
             _controlBarButton(
-              icon: Remix.route_line,
-              tooltip: i18n('multiview_line_selector'),
-              onTap: () => _showLineSheet(state),
+              icon: Remix.refresh_line,
+              tooltip: i18n('multiview_refresh'),
+              onTap: () {
+                final room = state.room;
+                if (room != null) unawaited(controller.assignRoom(index, room));
+              },
             ),
-          _controlBarButton(
-            icon: Remix.volume_down_line,
-            tooltip: i18n('multiview_volume'),
-            onTap: () => _showVolumeSheet(bigIndex),
-          ),
-          _controlBarButton(
-            icon: _displayMode == _DisplayMode.fullscreen ? Remix.fullscreen_exit_line : Remix.fullscreen_line,
-            tooltip: i18n('multiview_fullscreen'),
-            onTap: () => unawaited(
-              _changeDisplayMode(
-                _displayMode == _DisplayMode.fullscreen ? _DisplayMode.normal : _DisplayMode.fullscreen,
+            Obx(() {
+              final enabled = controller.danmakuEnabled.value;
+              return _controlBarButton(
+                icon: CustomIcons.danmaku_open,
+                tooltip: i18n('danmaku'),
+                iconColor: enabled ? Theme.of(context).colorScheme.primary : iconColor,
+                // 弹幕为页级总开关：与工具条入口同源，一次操作作用于全部画面。
+                onTap: () => controller.danmakuEnabled.toggle(),
+              );
+            }),
+            _controlBarButton(
+              icon: Remix.settings_3_line,
+              tooltip: i18n('multiview_danmaku_settings'),
+              onTap: _showDanmakuSettings,
+            ),
+            _controlBarButton(
+              icon: Remix.hd_line,
+              tooltip: i18n('select_quality'),
+              onTap: () => _showQualitySheet(state),
+            ),
+            if (state.lines.length > 1)
+              _controlBarButton(
+                icon: Remix.route_line,
+                tooltip: i18n('multiview_line_selector'),
+                onTap: () => _showLineSheet(state),
+              ),
+            _controlBarButton(
+              icon: Remix.volume_down_line,
+              tooltip: i18n('multiview_volume'),
+              onTap: () => _showVolumeSheet(index),
+            ),
+            _controlBarButton(
+              icon: _displayMode == _DisplayMode.fullscreen ? Remix.fullscreen_exit_line : Remix.fullscreen_line,
+              tooltip: i18n('multiview_fullscreen'),
+              onTap: () => unawaited(
+                _changeDisplayMode(
+                  _displayMode == _DisplayMode.fullscreen ? _DisplayMode.normal : _DisplayMode.fullscreen,
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  /// 控制条按钮：视频上的白色图标，统一尺寸。
+  /// 控制条按钮：视频上的白色图标，紧凑密度以适应小格宽度。
   Widget _controlBarButton({
     required IconData icon,
     required String tooltip,
@@ -744,7 +815,11 @@ class _MultiviewPageState extends State<MultiviewPage> {
   }) {
     return IconButton(
       tooltip: tooltip,
-      icon: Icon(icon, size: 20, color: iconColor ?? Colors.white.withValues(alpha: 0.92)),
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+      icon: Icon(icon, color: iconColor ?? Colors.white.withValues(alpha: 0.92)),
       onPressed: onTap,
     );
   }
@@ -842,6 +917,50 @@ class _MultiviewPageState extends State<MultiviewPage> {
     );
   }
 
+  /// 格子点击的统一语义。
+  ///
+  /// 逐格模式（Windows）：点按呼出/隐藏该格控制条。音频焦点已不再决定
+  /// 声源（所有格可同时出声），点按因此让位给控制条入口；晋升改为经
+  /// 长按菜单入口。
+  /// 非逐格模式：保持既有交互——focus 小格晋升、focus 大格切控制条、
+  /// 其余布局切换音频焦点。
+  void _handleCellTap(List<MultiviewCellState> cells, int index, {required bool isWide}) {
+    switch (cells[index].status) {
+      case MultiviewCellStatus.playing:
+        if (controller.perCellMode) {
+          _toggleCellControls(index);
+          return;
+        }
+        // 一大多小下点击小格 = 晋升为大画面（声源跟随大画面）；
+        // 晋升后全部控制条复位收起。
+        if (controller.layout.value == MultiviewLayout.focus && controller.focusedCellIndex.value != index) {
+          unawaited(controller.promoteCell(index)); // focusedCellIndex 为 Rx，Obx 自行重绘
+          _controlsVisible.clear();
+          setState(() {});
+          return;
+        }
+        // focus 大格点击 = 切换控制条显隐（对齐 live_play 点按呼出
+        // 控制条的交互）；其余布局维持原音频焦点行为。
+        if (controller.layout.value == MultiviewLayout.focus) {
+          _toggleCellControls(index);
+          return;
+        }
+        unawaited(controller.setAudioFocus(index));
+      case MultiviewCellStatus.empty || MultiviewCellStatus.offline || MultiviewCellStatus.error:
+        _openPickerFor(index, isWide: isWide);
+      case MultiviewCellStatus.resolving:
+        break;
+    }
+  }
+
+  void _toggleCellControls(int index) {
+    setState(() {
+      if (!_controlsVisible.remove(index)) {
+        _controlsVisible.add(index);
+      }
+    });
+  }
+
   Widget _buildCellAt(
     List<MultiviewCellState> cells,
     int index, {
@@ -851,52 +970,57 @@ class _MultiviewPageState extends State<MultiviewPage> {
   }) {
     final state = cells[index];
     final status = state.status;
-    return _MultiviewCellView(
+    final showControls = _controlsVisible.contains(index) && status == MultiviewCellStatus.playing;
+    return Listener(
       key: _cellKey(index),
-      state: state,
-      isAudioFocus: controller.audioFocusIndex == index && status == MultiviewCellStatus.playing,
-      isPickTarget: _targetCell == index && isMultiviewCellAssignable(status),
-      showDanmaku: showDanmaku && status == MultiviewCellStatus.playing && state.videoController != null,
-      barrageController: controller.barrageController,
-      showQualityEntry: showQualityEntry,
-      onSelectQuality: (qualityIndex) => unawaited(controller.setCellQuality(index, qualityIndex)),
-      onTap: () {
-        switch (status) {
-          case MultiviewCellStatus.playing:
-            // 一大多小下点击小格 = 晋升为大画面（声源跟随大画面）；
-            // 新大画面从隐藏控制条开始。
-            if (controller.layout.value == MultiviewLayout.focus && controller.focusedCellIndex.value != index) {
-              unawaited(controller.promoteCell(index)); // focusedCellIndex 为 Rx，Obx 自行重绘
-              _largeControlsVisible = false;
-              setState(() {});
-              return;
-            }
-            // focus 大格点击 = 切换控制条显隐（对齐 live_play 点按呼出
-            // 控制条的交互）；其余布局维持原音频焦点行为。
-            if (controller.layout.value == MultiviewLayout.focus) {
-              setState(() => _largeControlsVisible = !_largeControlsVisible);
-              return;
-            }
-            unawaited(controller.setAudioFocus(index));
-          case MultiviewCellStatus.empty || MultiviewCellStatus.offline || MultiviewCellStatus.error:
-            _openPickerFor(index, isWide: isWide);
-          case MultiviewCellStatus.resolving:
-            break;
-        }
-      },
-      onLongPress: status == MultiviewCellStatus.playing ? () => _showCellActions(state) : null,
-      onRetry: () => _retryCell(state),
+      onPointerSignal: (event) => _handleCellScroll(event, index),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          _MultiviewCellView(
+            state: state,
+            // 逐格模式下所有格都出声，「声音来源」角标不再成立，隐藏以免误导。
+            isAudioFocus:
+                !controller.perCellMode && controller.audioFocusIndex == index && status == MultiviewCellStatus.playing,
+            isPickTarget: _targetCell == index && isMultiviewCellAssignable(status),
+            showDanmaku: showDanmaku && status == MultiviewCellStatus.playing && state.videoController != null,
+            barrageController: controller.barrageControllerFor(index),
+            showQualityEntry: showQualityEntry,
+            onSelectQuality: (qualityIndex) => unawaited(controller.setCellQuality(index, qualityIndex)),
+            onTap: () => _handleCellTap(cells, index, isWide: isWide),
+            onLongPress: status == MultiviewCellStatus.playing ? () => _showCellActions(state) : null,
+            onRetry: () => _retryCell(state),
+          ),
+          if (showControls) Positioned(left: 6, right: 6, bottom: 6, child: _buildCellControlBar(cells, index)),
+        ],
+      ),
     );
+  }
+
+  /// 格子上的滚轮 = 调该格音量（仅逐格模式）。
+  ///
+  /// 一大多小的小列外层是 SingleChildScrollView：滚动信号由
+  /// [PointerSignalResolver] 裁决。本 Listener 位于滚动容器内层，会先于
+  /// Scrollable 注册，因此必须显式抢占——否则滚轮会被列表滚动吃掉。
+  void _handleCellScroll(PointerSignalEvent event, int index) {
+    if (!controller.perCellMode || event is! PointerScrollEvent) return;
+    // 缩容与滚轮事件可能交错：越界下标直接放弃，避免异步音量调用抛出。
+    if (index < 0 || index >= controller.cells.length) return;
+    final dy = event.scrollDelta.dy;
+    if (dy == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      unawaited(_stepCellVolume(index, dy < 0 ? _volumeStep : -_volumeStep));
+    });
   }
 }
 
 /// 单格视图：按生命周期状态渲染播放画面、空态、加载与错误占位。
 ///
-/// 音频焦点格以主色描边 + 「声音来源」角标突出；目标空格以待选描边提示。
-/// 大画面格（focus 布局）额外承载弹幕层与清晰度入口。
+/// 「声音来源」角标由页面按音频焦点折算传入——逐格模式（Windows）下
+/// 所有格同时出声，该角标不再显示；目标空格以待选描边提示。
+/// 弹幕层与清晰度入口同样由页面按格状态与布局折算后传入。
 class _MultiviewCellView extends StatelessWidget {
   const _MultiviewCellView({
-    super.key,
     required this.state,
     required this.isAudioFocus,
     required this.isPickTarget,
@@ -918,7 +1042,9 @@ class _MultiviewCellView extends StatelessWidget {
 
   /// 在大画面上层叠弹幕；由页面按 danmakuEnabled 折算后传入。
   final bool showDanmaku;
-  final BarrageController barrageController;
+
+  /// 该格专属弹幕渲染入口；缩容等瞬态下可能为 null。
+  final BarrageController? barrageController;
 
   /// 是否显示清晰度入口（仅 focus 布局大画面为 true）。
   final bool showQualityEntry;
@@ -950,6 +1076,7 @@ class _MultiviewCellView extends StatelessWidget {
 
   Widget _buildContent(ThemeData theme) {
     final videoController = state.videoController;
+    final barrage = barrageController;
     if (state.status == MultiviewCellStatus.playing && videoController != null) {
       final video = Video(
         controller: videoController,
@@ -972,8 +1099,9 @@ class _MultiviewCellView extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           videoSurface,
-          // 弹幕层：仅大画面渲染；IgnorePointer 保证不遮挡格子手势。
-          if (showDanmaku)
+          // 弹幕层：逐格模式（Windows）下每格各自渲染；IgnorePointer
+          // 保证不遮挡格子手势。
+          if (showDanmaku && barrage != null)
             Positioned.fill(
               child: IgnorePointer(
                 // 独立 Obx：_buildBarrageConfig 在订阅作用域内读取全部弹幕
@@ -986,7 +1114,7 @@ class _MultiviewCellView extends StatelessWidget {
                   // 显式订阅其响应源以覆盖自动帧率模式切换。
                   SettingsService.to.app.refreshRateModeName.v;
                   return FlameBarrageWidget(
-                    controller: barrageController,
+                    controller: barrage,
                     enablePointerEvents: false,
                     config: _buildBarrageConfig(),
                     emojiAtlas: EmojiAtlas.instance,
