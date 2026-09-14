@@ -1589,6 +1589,8 @@
     "open_new_window": "Open an independent player window",
     "open_new_window_subtitle": "Open the current stream in a separate window",
     "open_room_in_new_window": "Play this room in a new window",
+    "open_room_in_new_window_default": "Open live rooms in a new window by default",
+    "open_room_in_new_window_default_subtitle": "Rooms tapped in favourites, home, categories, search or history start their own window, leaving the current window untouched",
     "open_new_window_failed": "The new window did not start. Try again.",
     "danmaku_repeat_filter": "Repeated danmaku filter",
     "collapse_repeated_danmaku": "Collapse identical danmaku bursts",

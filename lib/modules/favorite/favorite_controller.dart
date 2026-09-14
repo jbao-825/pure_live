@@ -9,6 +9,7 @@ import 'package:pure_live/core/interface/live_site.dart';
 import 'package:pure_live/modules/tags/tag_management_controller.dart';
 import 'package:pure_live/modules/favorite/favorite_startup_policy.dart';
 import 'package:pure_live/common/services/settings/refresh_config_controller.dart';
+import 'package:pure_live/common/global/initialized.dart';
 
 class FavoriteController extends LocalReactivePageController<LiveRoom>
     with GetTickerProviderStateMixin, WidgetsBindingObserver {
@@ -109,15 +110,21 @@ class FavoriteController extends LocalReactivePageController<LiveRoom>
     // first rendered frame. Persisted metadata remains useful, but its old
     // live/offline bit is invalidated synchronously so an ended stream is not
     // painted as live while requests are still in flight (or if one fails).
-    unawaited(refreshPersistedRoomsOnStartup());
+    //
+    // A child window only renders a player page: it never shows the favourite
+    // grid, so it also skips the periodic refresh. Without this, N windows
+    // would each fan out a full verification pass over the same favourites.
+    if (AppInitializer().instanceId.isEmpty) {
+      unawaited(refreshPersistedRoomsOnStartup());
+
+      _setupRefreshStrategy();
+      _configSubscription = refreshConfigController.configChanges.listen((config) {
+        if (!config.refreshFavoriteOnResume) _cancelPendingResumeRefresh();
+        _setupRefreshStrategy();
+      });
+    }
 
     tabController.addListener(_handleStatusTabChange);
-
-    _setupRefreshStrategy();
-    _configSubscription = refreshConfigController.configChanges.listen((config) {
-      if (!config.refreshFavoriteOnResume) _cancelPendingResumeRefresh();
-      _setupRefreshStrategy();
-    });
 
     listenFavorite();
     listenRoomChanged();

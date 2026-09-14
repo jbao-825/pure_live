@@ -61,6 +61,14 @@ class GeneralSettingsPage extends GetView<SettingsService> {
                 value: SettingsService.to.app.enableNewWindowPlay,
                 icon: Icons.add_to_photos_outlined,
               ),
+            if (Platform.isWindows)
+              context.buildSwitchTile(
+                title: i18n('open_room_in_new_window_default'),
+                subtitle: i18n('open_room_in_new_window_default_subtitle'),
+                value: SettingsService.to.app.openRoomInNewWindow,
+                icon: Icons.open_in_new_rounded,
+                isLong: true,
+              ),
             context.buildSwitchTile(
               title: i18n('splash_animation'),
               subtitle: i18n("splash_animation_subtitle"),

@@ -39,11 +39,18 @@ class AppInitializer {
   static final AppInitializer _instance = AppInitializer._internal();
   bool _isInitialized = false;
   LiveRoom? _initialRoom;
+  String _instanceId = '';
 
   factory AppInitializer() => _instance;
   AppInitializer._internal();
 
   bool get isInitialized => _isInitialized;
+
+  /// Empty for the primary window and non-empty for a window started through
+  /// [WindowsMultiInstanceLauncher]. A child window is a player page only, so
+  /// the parts of the app that belong to the primary session (tray icon,
+  /// favourite verification, startup update prompt) use this to stay away.
+  String get instanceId => _instanceId;
 
   /// Returns a command-line room once, after the home navigator is mounted.
   LiveRoom? takeInitialRoom() {
@@ -58,6 +65,7 @@ class AppInitializer {
     WidgetsFlutterBinding.ensureInitialized();
     configureDecodedImageCache(desktop: PlatformUtils.isDesktop);
     final String instanceId = WindowsMultiInstanceLauncher.instanceIdFromArgs(args);
+    _instanceId = instanceId;
     _initialRoom = WindowsMultiInstanceLauncher.roomFromArgs(args);
     await _initWindowsSingleInstance(args, instanceId);
 
@@ -130,7 +138,7 @@ class AppInitializer {
     initRefresh();
 
     if (PlatformUtils.isDesktop) {
-      await DesktopManager.initialize();
+      await DesktopManager.initialize(initTray: instanceId.isEmpty);
     } else if (PlatformUtils.isMobile) {
       await MobileManager.initialize();
     }

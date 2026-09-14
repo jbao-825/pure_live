@@ -68,9 +68,13 @@ class _MyAppState extends State<MyApp> with DesktopWindowMixin {
     });
     if (PlatformUtils.isDesktop) {
       DesktopManager.initializeListeners(this);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(DesktopManager.updateTrayWhenLocalized());
-      });
+      // A child window owns no tray icon (see DesktopManager.initialize), so
+      // there is no context menu to localize for it.
+      if (AppInitializer().instanceId.isEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(DesktopManager.updateTrayWhenLocalized());
+        });
+      }
     }
     unawaited(initSharedMediaListener());
     unawaited(initGlobalPlayer());

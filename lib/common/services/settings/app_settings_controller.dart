@@ -61,6 +61,10 @@ class AppSettingsController extends GetxController {
   // still allowing users to hide either entry explicitly.
   final RxBool enableMultiView = hiveBool('enableMultiView', true);
   final RxBool enableNewWindowPlay = hiveBool('enableNewWindowPlay', true);
+  // Windows only: when on, tapping a live room opens it in its own process
+  // instead of navigating inside the current window. Off by default, because
+  // it reroutes every entry point at once and spawns a process per room.
+  final RxBool openRoomInNewWindow = hiveBool('openRoomInNewWindow', false);
 
   AppRefreshRateMode get refreshRateMode => AppRefreshRateMode.parse(refreshRateModeName.v);
 
@@ -213,6 +217,7 @@ class AppSettingsController extends GetxController {
       'savedMenuIds': savedMenuIds.v,
       'enableMultiView': enableMultiView.v,
       'enableNewWindowPlay': enableNewWindowPlay.v,
+      'openRoomInNewWindow': openRoomInNewWindow.v,
     };
   }
 
@@ -243,6 +248,7 @@ class AppSettingsController extends GetxController {
       ),
       'enableMultiView': typed<bool>(json['enableMultiView'] ?? true),
       'enableNewWindowPlay': typed<bool>(json['enableNewWindowPlay'] ?? true),
+      'openRoomInNewWindow': typed<bool>(json['openRoomInNewWindow'] ?? false),
     };
   }
 
@@ -266,6 +272,7 @@ class AppSettingsController extends GetxController {
     savedMenuIds.v = parsed['savedMenuIds'];
     enableMultiView.v = parsed['enableMultiView'];
     enableNewWindowPlay.v = parsed['enableNewWindowPlay'];
+    openRoomInNewWindow.v = parsed['openRoomInNewWindow'];
   }
 
   static Map<String, dynamic> extractConfig(Map<String, dynamic>? rootConfig) {
@@ -293,6 +300,7 @@ class AppSettingsController extends GetxController {
       ),
       'enableMultiView': app['enableMultiView'] ?? true,
       'enableNewWindowPlay': app['enableNewWindowPlay'] ?? true,
+      'openRoomInNewWindow': app['openRoomInNewWindow'] ?? false,
     };
   }
 

@@ -90,7 +90,10 @@ class _HomePageState extends State<HomePage> with AutomaticKeepAliveClientMixin,
           await GlobalPlayerService.instance.initialize(defaultEngine: PlayerEngine.mediaKit);
         }
         if (!mounted) return;
-        await AppNavigator.toLiveRoomDetail(liveRoom: initialRoom);
+        // A window started from the command line exists to play one room.
+        // Replace the home page instead of stacking on top of it, so its
+        // controllers are disposed rather than kept alive behind the player.
+        await AppNavigator.offAndToRoomDetail(liveRoom: initialRoom);
       }
     });
 

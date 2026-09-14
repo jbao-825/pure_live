@@ -22,7 +22,11 @@ import 'package:pure_live/player/utils/window_helper.dart';
 
 class DesktopManager {
   static State? _currentState;
-  static Future<void> initialize() async {
+
+  /// [initTray] is false for a child window. Each tray icon belongs to the
+  /// process that created it and offers its own "exit", so N windows would
+  /// present N competing exits for what the user sees as one application.
+  static Future<void> initialize({bool initTray = true}) async {
     if (!PlatformUtils.isDesktop) return;
 
     try {
@@ -69,7 +73,7 @@ class DesktopManager {
         }
       });
 
-      await _initTray();
+      if (initTray) await _initTray();
     } catch (e) {
       debugPrint('桌面端初始化失败: $e');
     }

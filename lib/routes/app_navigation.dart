@@ -1,10 +1,13 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:pure_live/common/index.dart';
 import 'package:pure_live/plugins/utils.dart';
+import 'package:pure_live/common/global/initialized.dart';
 import 'package:pure_live/core/site/cc/cc_catalog.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:pure_live/common/utils/windows_multi_instance_launcher.dart';
 
 /// APP页面跳转封装
 /// * 需要参数的页面都应使用此类
@@ -12,6 +15,16 @@ import 'package:url_launcher/url_launcher.dart';
 class AppNavigator {
   static bool _openingLiveRoom = false;
   static bool _openingOfficialCategory = false;
+
+  /// Windows only. True when live rooms should open in their own window and
+  /// this process is the primary one. A child window reports a non-empty
+  /// instance id, so its own taps stay in place - which is also what keeps a
+  /// window from spawning further windows.
+  static bool get _opensLiveRoomInNewWindow =>
+      Platform.isWindows &&
+      AppInitializer().instanceId.isEmpty &&
+      SettingsService.to.app.enableNewWindowPlay.v &&
+      SettingsService.to.app.openRoomInNewWindow.v;
 
   /// 跳转至分类详情
   static Future<void> toCategoryDetail({required Site site, required LiveArea category}) async {
@@ -49,6 +62,26 @@ class AppNavigator {
     final normalizedRoom = liveRoom.platform == platform && liveRoom.roomId == roomId
         ? liveRoom
         : liveRoom.copyWith(platform: platform, roomId: roomId);
+    // Every entry point (favourites, home, categories, search, history, ...)
+    // funnels through here, so this single gate covers all of them and any
+    // entry added later inherits the setting without touching the UI layer.
+    if (_opensLiveRoomInNewWindow) {
+      _openingLiveRoom = true;
+      try {
+        await WindowsMultiInstanceLauncher.launch(room: normalizedRoom);
+      } catch (error, stackTrace) {
+        developer.log(
+          'Open live room in a new Windows instance failed',
+          name: 'AppNavigator',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        ToastUtil.show(i18n('open_new_window_failed'));
+      } finally {
+        _openingLiveRoom = false;
+      }
+      return;
+    }
     _openingLiveRoom = true;
     try {
       final manager = GlobalPlayerService.instance.player;
