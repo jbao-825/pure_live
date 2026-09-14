@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:pure_live/common/index.dart';
+import 'package:pure_live/player/core/desktop_volume_policy.dart';
 import 'package:pure_live/modules/live_play/controllers/player_state.dart';
+import 'package:pure_live/modules/live_play/widgets/video_player/desktop_volume_notice.dart';
 import 'package:pure_live/modules/live_play/widgets/video_player/video_controller.dart';
 
 class VideoKeyboardShortcuts extends StatelessWidget {
@@ -47,6 +49,23 @@ class VideoKeyboardShortcuts extends StatelessWidget {
     }
   }
 
+  /// Steps the room volume by [delta] through the room's desktop high-volume
+  /// gate, so the volume keys share one confirmation flow with the hover
+  /// control instead of silently reaching the boosted range.
+  Future<void> _adjustVolume(BuildContext context, VideoController controller, double delta) async {
+    // Resolve the messenger before the async volume read so the risk notice is
+    // never posted through a stale context.
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final double? current = await controller.volume();
+    if (current == null || !current.isFinite) return;
+    // A key press has a real release, so every press is an adjustment of its
+    // own and may confirm the boost the previous press armed.
+    final request = controller.requestDesktopVolume(startsNewAdjustment: true, target: current + delta);
+    controller.setVolume(request.applied);
+    controller.updateVolumn(request.applied);
+    if (request.riskPrompt) showDesktopVolumeRiskNotice(messenger);
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = this.controller;
@@ -60,23 +79,11 @@ class VideoKeyboardShortcuts extends StatelessWidget {
         const SingleActivator(LogicalKeyboardKey.space): () => GlobalPlayerService.instance.player.togglePlayPause(),
         if (controller != null) const SingleActivator(LogicalKeyboardKey.keyR): () => controller.refresh(),
         if (controller != null)
-          const SingleActivator(LogicalKeyboardKey.arrowUp): () async {
-            double? volume = await controller.volume();
-            if (volume == null) return;
-            volume = volume + 0.05;
-            volume = volume.clamp(0.0, 1.0);
-            controller.setVolume(volume);
-            controller.updateVolumn(volume);
-          },
+          const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
+              _adjustVolume(context, controller, DesktopVolumePolicy.step),
         if (controller != null)
-          const SingleActivator(LogicalKeyboardKey.arrowDown): () async {
-            double? volume = await controller.volume();
-            if (volume == null) return;
-            volume = volume - 0.05;
-            volume = volume.clamp(0.0, 1.0);
-            controller.setVolume(volume);
-            controller.updateVolumn(volume);
-          },
+          const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+              _adjustVolume(context, controller, -DesktopVolumePolicy.step),
       },
       // Rooms with no initialized player still need a focus target. Descendant
       // controls/text inputs retain their own focus and key handling priority.

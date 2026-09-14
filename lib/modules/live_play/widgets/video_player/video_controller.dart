@@ -16,6 +16,7 @@ import 'package:pure_live/plugins/db_service.dart';
 import 'package:pure_live/player/utils/fullscreen.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
+import 'package:pure_live/player/core/desktop_volume_policy.dart';
 import 'package:pure_live/player/core/player_manager.dart';
 import 'package:pure_live/player/core/portrait_stream_support.dart';
 import 'package:pure_live/modules/live_play/widgets/layout/portrait_fullscreen_interaction.dart';
@@ -407,6 +408,16 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
   final VolumeController? _injectedVolumeController;
   static const _volumeOperationTimeout = Duration(seconds: 2);
   int _volumeRevision = 0;
+
+  /// Windows/Linux sessions may amplify the live audio above 100%. The gate is
+  /// scoped to this controller, i.e. to one room session, so every room asks
+  /// for high-volume confirmation again.
+  final DesktopVolumeBoostGate desktopVolumeGate = DesktopVolumeBoostGate();
+
+  static bool get _supportsVolumeBoost => Platform.isWindows || Platform.isLinux;
+  double get _maxApplicableVolume =>
+      _supportsVolumeBoost ? DesktopVolumePolicy.maxVolume : DesktopVolumePolicy.safeVolume;
+
   bool get _usesSystemVolume => PlatformHelper.supportsVolumeController || _injectedVolumeController != null;
   bool get _ownsVolume => !_isDisposed && _playerManager.ownsVideoController(this);
   late final BarrageController danmakuController;
@@ -792,7 +803,9 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
 
   Future<double?> volume() async {
     if (!_ownsVolume) return null;
-    if (!_usesSystemVolume) return room.getSavedVolume();
+    // Desktop keeps its actual room-session volume in memory, including the
+    // temporary 100%-150% desktop boost which is never persisted.
+    if (!_usesSystemVolume) return currentVolume.value;
     final revision = _volumeRevision;
     try {
       final observed = await _volumeController.getVolume().timeout(_volumeOperationTimeout);
@@ -809,13 +822,34 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     await trySetVolume(value);
   }
 
+  /// Resolves a desktop volume adjustment.
+  ///
+  /// [startsNewAdjustment] marks the first resolution of a new adjustment: a
+  /// fresh key press, the first update of a drag, or a wheel notch arriving
+  /// after the volume card has faded out. Everything following inside the same
+  /// adjustment passes false, so one continuous roll can reach the 100% cap but
+  /// never confirm the boost on its own.
+  ///
+  /// Callers apply `request.applied` through [setVolume] and surface the
+  /// high-volume risk notice when `request.riskPrompt` is set. Non-desktop
+  /// platforms keep the safe 0-100% range without any gate.
+  DesktopVolumeRequest requestDesktopVolume({required bool startsNewAdjustment, required double target}) {
+    if (!_supportsVolumeBoost) {
+      final applied = target.isFinite
+          ? target.clamp(0.0, DesktopVolumePolicy.safeVolume).toDouble()
+          : currentVolume.value;
+      return DesktopVolumeRequest(applied: applied, riskPrompt: false);
+    }
+    return desktopVolumeGate.request(startsNewAdjustment: startsNewAdjustment, target: target);
+  }
+
   /// Applies a user-requested volume and reports whether the active room still
   /// owned the operation. Ordinary controls keep using [setVolume], while
   /// transactional UI can retain its draft when the platform write fails.
   Future<bool> trySetVolume(double value) async {
     if (!_ownsVolume || !value.isFinite) return false;
     final revision = ++_volumeRevision;
-    final resolved = value.clamp(0.0, 1.0).toDouble();
+    final resolved = value.clamp(0.0, _maxApplicableVolume).toDouble();
     try {
       if (_usesSystemVolume) {
         await _volumeController.setVolume(resolved).timeout(_volumeOperationTimeout);
@@ -827,7 +861,11 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
       if (!_ownsVolume) return false;
       if (revision != _volumeRevision) return true;
       currentVolume.value = resolved;
-      await room.saveCurrentVolume(resolved);
+      // The desktop boost is session-scoped: never persist a value above the
+      // safe cap, so a later room entry and the global default stay 0-100%.
+      if (resolved <= DesktopVolumePolicy.safeVolume) {
+        await room.saveCurrentVolume(resolved);
+      }
       return true;
     } catch (error, stack) {
       log('Set volume failed', name: 'VideoController.Volume', error: error, stackTrace: stack);

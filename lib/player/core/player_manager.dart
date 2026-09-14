@@ -7,6 +7,7 @@ import 'package:pure_live/core/common/hls_source_query_policy.dart';
 
 import 'playback_source_transport.dart';
 import 'playback_source.dart';
+import 'desktop_volume_policy.dart';
 
 import 'line_fallback_manager.dart';
 import 'live_stream_geometry_hint.dart';
@@ -2690,7 +2691,12 @@ class PlayerManager {
   }
 
   Future<void> setVolume(double volume) async {
-    await _currentPlayer?.setVolume(volume.clamp(0.0, 1.0));
+    // Windows/Linux sessions may amplify up to 150%; the persisted and global
+    // volumes still clamp to the safe 100% ceiling.
+    final double maxVolume = PlatformUtils.isDesktopNotMac
+        ? DesktopVolumePolicy.maxVolume
+        : DesktopVolumePolicy.safeVolume;
+    await _currentPlayer?.setVolume(volume.clamp(0.0, maxVolume));
   }
 
   void changeVideoFit(int index) {

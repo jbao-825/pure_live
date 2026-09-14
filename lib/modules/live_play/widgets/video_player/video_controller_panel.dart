@@ -13,6 +13,8 @@ import 'package:pure_live/common/utils/play_quality_label.dart';
 import 'package:pure_live/modules/live_play/states/ui_state.dart';
 import 'package:pure_live/modules/live_play/states/load_type.dart';
 import 'package:pure_live/player/core/portrait_stream_support.dart';
+import 'package:pure_live/player/core/desktop_volume_policy.dart';
+import 'package:pure_live/modules/live_play/widgets/video_player/desktop_volume_notice.dart';
 import 'package:pure_live/modules/live_play/dialogs/play_other.dart';
 import 'package:pure_live/modules/live_play/controllers/player_state.dart';
 import 'package:pure_live/modules/live_play/pages/danmaku_settings_page.dart';
@@ -129,6 +131,10 @@ class _VideoControllerPanelState extends State<VideoControllerPanel> {
         child: Obx(() {
           final double currentVolume = controller.currentVolume.value;
           final int percentage = (currentVolume * 100).round();
+          // The desktop session may hold a temporary 100%-150% boost; the bar
+          // itself still maps its safe 0-100% track.
+          final bool volumeBoosted = currentVolume > DesktopVolumePolicy.safeVolume;
+          final Color volumeLevelColor = volumeBoosted ? const Color(0xFFFFB300) : Colors.white;
           final screenMode = controller.livePlayController.state.value.ui.screenMode;
           final bottomBarHeight = resolveBottomActionBarHeight(screenMode, regularHeight: barHeight);
 
@@ -166,16 +172,24 @@ class _VideoControllerPanelState extends State<VideoControllerPanel> {
                                   width: 100,
                                   height: 20,
                                   child: LinearProgressIndicator(
-                                    value: currentVolume,
+                                    // The indicator maps the safe 0-100% track;
+                                    // a boosted session still reports its real
+                                    // level through the percentage label.
+                                    value: currentVolume.clamp(0.0, DesktopVolumePolicy.safeVolume),
                                     backgroundColor: Colors.white38,
-                                    valueColor: const AlwaysStoppedAnimation(Colors.white),
+                                    valueColor: AlwaysStoppedAnimation(volumeLevelColor),
                                   ),
                                 ),
                               ),
                             ),
+                            if (volumeBoosted)
+                              const Padding(
+                                padding: EdgeInsets.only(right: 4),
+                                child: Icon(Icons.warning_amber_rounded, color: Color(0xFFFFB300), size: 16),
+                              ),
                             Text(
                               "$percentage%",
-                              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                              style: TextStyle(color: volumeLevelColor, fontSize: 13, fontWeight: FontWeight.bold),
                             ),
                           ],
                         ),
@@ -779,13 +793,68 @@ class BrightnessVolumnDargArea extends StatefulWidget {
   State<BrightnessVolumnDargArea> createState() => BrightnessVolumnDargAreaState();
 }
 
+/// Brightness / volume card overlaying the video surface.
+///
+/// ## HUD lifetime
+///
+/// | phase | trigger | hide timer |
+/// | --- | --- | --- |
+/// | shown | first drag update or wheel notch of an adjustment | [_hudHideDelay] |
+/// | visible | further adjustments keep arriving | rescheduled every update |
+/// | hidden | the scheduled timer elapsed | — |
+///
+/// The card is also the desktop volume gate's clock. A wheel emits a burst of
+/// notches and never reports an end, so the only thing that can tell "still
+/// rolling" from "rolled again" is how long the user actually stopped. The card
+/// already answers that out loud: it stays up while adjustments keep arriving and
+/// fades one second after the last one, which is precisely the pause that
+/// separates two adjustments. Reading [_hideBVStuff] therefore needs no timer of
+/// its own, no gesture-set bookkeeping and no guessed interval.
+///
+/// ## The 100% threshold
+///
+/// Every volume adjustment is resolved by the room's [DesktopVolumeBoostGate]:
+///
+/// 1. A requested value below 100% applies directly.
+/// 2. The first adjustment that reaches 100% is held at exactly 100%, surfaces
+///    the risk notice and records that only a *later* adjustment may go higher.
+/// 3. A later adjustment may then apply above 100% (up to 150%), which unlocks
+///    the boosted range for the rest of the room session.
+///
+/// What counts as one adjustment is what keeps the hold perceptible:
+///
+/// - **wheel and drag** — the card's own visibility. While it is still up the
+///   notches belong to the same adjustment, so a continuous roll parks on the
+///   cap; only a notch arriving after it faded opens the next adjustment and may
+///   go higher.
+/// - **keyboard** — one key press, which has a real release of its own.
+/// - **the overlay volume bar** — one drag gesture.
 class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
   VideoController get controller => widget.controller;
+
+  /// Auto-hide delay after an adjustment.
+  ///
+  /// This delay doubles as the desktop volume gate's "one adjustment" boundary
+  /// for the wheel and drag inputs: while the card is on screen the user is
+  /// still inside the same adjustment and the volume stays capped at 100%. Once
+  /// it has faded, the next notch starts a new adjustment, which is what may
+  /// reach the boosted 100%-150% range.
+  static const Duration _hudHideDelay = Duration(seconds: 1);
 
   Timer? _hideBVTimer;
   bool _hideBVStuff = true;
   bool _isDargLeft = true;
   double _updateDargVarVal = 1.0;
+
+  /// Unquantized accumulator for the running adjustment.
+  ///
+  /// [VideoController.requestDesktopVolume] snaps every target onto the 5% grid,
+  /// so feeding the *applied* value back in would swallow any sub-step movement:
+  /// one wheel notch (≈2% on a 1080p window) would round back to the value
+  /// already shown and the control would feel dead. The accumulator is rebased
+  /// from the controller whenever a new adjustment starts.
+  double _adjustValue = 1.0;
+
   bool _portraitRestoreGesture = false;
   double _portraitRestoreDistance = 0;
 
@@ -801,25 +870,44 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
   }
 
   void updateVolumn(double? volume) {
+    if (volume == null || !volume.isFinite) return;
     _isDargLeft = false;
-    _cancelAndRestartHideBVTimer();
     setState(() {
-      _updateDargVarVal = volume!;
+      _updateDargVarVal = volume;
+      _adjustValue = volume;
     });
+    _refreshBvHud();
   }
 
-  void _cancelAndRestartHideBVTimer() {
+  /// Shows or extends the HUD card and schedules its hide.
+  void _refreshBvHud() {
+    final bool needsRebuild = _hideBVStuff;
     _hideBVTimer?.cancel();
-    _hideBVTimer = Timer(const Duration(seconds: 1), () {
-      setState(() => _hideBVStuff = true);
-    });
-    setState(() => _hideBVStuff = false);
+    _hideBVTimer = Timer(_hudHideDelay, _onBvHudTimeout);
+    if (needsRebuild) setState(() => _hideBVStuff = false);
+  }
+
+  void _onBvHudTimeout() {
+    if (!mounted) return;
+    // The card fading out is what ends the current adjustment. The gate stays
+    // armed, so the next adjustment still confirms the boost.
+    setState(() => _hideBVStuff = true);
   }
 
   void _onVerticalDragUpdate(Offset position, Offset delta) async {
     if (controller.showLocked.value) return;
 
     if (delta.distance < 0.5) return;
+
+    // Whether this update opens a new adjustment. The card is still up while the
+    // user keeps adjusting, so a fade in between is exactly the pause that turns
+    // "more of the same roll" into "a new roll" for the high-volume gate. Read it
+    // before any await and before [_refreshBvHud] takes the card down.
+    final bool startsNewAdjustment = _hideBVStuff;
+
+    // Resolve the messenger before any async gap so the risk notice is never
+    // posted through a stale context.
+    final messenger = ScaffoldMessenger.maybeOf(context);
 
     final size = MediaQuery.of(context).size;
     final width = size.width;
@@ -834,30 +922,60 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
       if (_isDargLeft) {
         if (PlatformUtils.isMobile) {
           double v = await controller.brightness();
+          if (!mounted) return;
           setState(() => _updateDargVarVal = v);
         }
       } else {
         double? v = await controller.volume();
+        if (!mounted) return;
         setState(() => _updateDargVarVal = v ?? 1.0);
       }
+      // The card was hidden (or the side changed), so the shown value was just
+      // re-read from the controller: restart the sub-step accumulator from it.
+      _adjustValue = _updateDargVarVal;
     }
-
-    _cancelAndRestartHideBVTimer();
 
     double sensitivity = 0.25;
     double deltaValue = -(delta.dy / (height / 2)) * sensitivity;
 
-    double dragRange = _updateDargVarVal + deltaValue;
-
-    dragRange = dragRange.clamp(0.0, 1.0);
-
-    if ((dragRange - _updateDargVarVal).abs() > 0.001) {
-      if (_isDargLeft) {
-        controller.setBrightness(dragRange);
-      } else {
-        controller.setVolume(dragRange);
+    if (_isDargLeft) {
+      // Brightness keeps the plain 0-100% range without any gate.
+      _adjustValue = (_adjustValue + deltaValue).clamp(0.0, 1.0);
+      if ((_adjustValue - _updateDargVarVal).abs() > 0.001) {
+        controller.setBrightness(_adjustValue);
+        setState(() => _updateDargVarVal = _adjustValue);
       }
-      setState(() => _updateDargVarVal = dragRange);
+      _refreshBvHud();
+      return;
+    }
+
+    // Desktop volume: route the adjustment through the room's high-volume gate,
+    // so 100%-150% stays behind the explicit second-adjustment confirmation. The
+    // card's own auto-hide is the boundary between adjustments: while it is still
+    // up this is the same adjustment, so a continuous roll parks on the cap; once
+    // it has faded the next notch starts a new one and may confirm the boost.
+    _adjustValue = (_adjustValue + deltaValue).clamp(0.0, DesktopVolumePolicy.maxVolume);
+    final request = controller.requestDesktopVolume(
+      startsNewAdjustment: startsNewAdjustment,
+      target: _adjustValue,
+    );
+    final double applied = request.applied;
+    if (request.heldAtCap) {
+      // The gate refused this adjustment's request and parked the value on the
+      // cap, so the accumulated travel is parked too. Without this a roll that
+      // kept going after the hold would have to be unwound notch by notch before
+      // the volume could move again. A *confirming* adjustment is never flagged
+      // here, so its accumulator keeps growing until it crosses into the boosted
+      // range.
+      _adjustValue = applied;
+    }
+    if ((applied - _updateDargVarVal).abs() > 0.001) {
+      controller.setVolume(applied);
+      setState(() => _updateDargVarVal = applied);
+    }
+    _refreshBvHud();
+    if (request.riskPrompt) {
+      showDesktopVolumeRiskNotice(messenger);
     }
   }
 
@@ -907,10 +1025,23 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
     }
 
     final int percentage = (_updateDargVarVal * 100).round();
+    // A boosted level gets marked amber so it is distinguishable from a plain
+    // reading. So does a 100% that is still waiting for its confirming
+    // adjustment, which is what makes the stop look intentional.
+    final bool boosted = !_isDargLeft && _updateDargVarVal > DesktopVolumePolicy.safeVolume;
+    final bool waitingAtCap =
+        !_isDargLeft &&
+        (_updateDargVarVal - DesktopVolumePolicy.safeVolume).abs() < 0.001 &&
+        controller.desktopVolumeGate.isAwaitingConfirmation;
+    final Color levelColor = boosted || waitingAtCap ? const Color(0xFFFFB300) : Colors.white;
 
     return Listener(
       onPointerSignal: (event) {
         if (event is PointerScrollEvent) {
+          // The notch carries no "roll ended" signal, so _onVerticalDragUpdate
+          // reads the card's own visibility to tell a continuing roll from a new
+          // one: while the card is up the roll stays capped at 100%, and only a
+          // notch arriving after it faded starts a new adjustment.
           _onVerticalDragUpdate(event.localPosition, event.scrollDelta);
         }
       },
@@ -943,18 +1074,29 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
                         child: SizedBox(
                           width: 100,
                           height: 20,
-                          child: LinearProgressIndicator(
-                            value: _updateDargVarVal,
-                            backgroundColor: Colors.white38,
-                            valueColor: const AlwaysStoppedAnimation(Colors.white),
-                          ),
+                      child: LinearProgressIndicator(
+                        // The track maps the safe 0-100% range; a boosted
+                        // session shows its real level through the percentage
+                        // label and the amber color.
+                        value: _updateDargVarVal.clamp(0.0, DesktopVolumePolicy.safeVolume),
+                        backgroundColor: Colors.white38,
+                        valueColor: AlwaysStoppedAnimation(levelColor),
+                      ),
                         ),
                       ),
                     ),
                     Text(
                       "$percentage%",
-                      style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                      style: TextStyle(color: levelColor, fontSize: 13, fontWeight: FontWeight.bold),
                     ),
+                    if (waitingAtCap)
+                      // The card is parked on 100% until a *new* adjustment
+                      // confirms the boost; mark it amber so the stop reads as a
+                      // deliberate threshold rather than a stuck number.
+                      const Padding(
+                        padding: EdgeInsets.only(left: 4),
+                        child: Icon(Icons.warning_amber_rounded, color: Color(0xFFFFB300), size: 14),
+                      ),
                   ],
                 ),
               ),
@@ -1886,7 +2028,7 @@ class BottomActionBar extends StatelessWidget {
         if (PlatformUtils.isMobile) PortraitFullscreenDisplayModeButton(controller: controller),
         if (PlatformUtils.isMobile) PortraitOrientationButton(controller: controller),
         VideoFitSetting(controller: controller),
-        if (Platform.isWindows) OverlayVolumeControl(controller: controller),
+        if (PlatformUtils.isDesktopNotMac) OverlayVolumeControl(controller: controller),
         if (Platform.isWindows && controller.supportWindowFull && !GlobalPlayerState.to.isFullscreen.value)
           ExpandWindowButton(controller: controller),
         if (!GlobalPlayerState.to.isWindowFullscreen.value) ExpandButton(controller: controller),

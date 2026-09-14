@@ -23,6 +23,7 @@ import 'package:pure_live/player/interface/media_kit_player_accessor.dart';
 import 'package:pure_live/player/core/player_error_classifier.dart';
 import 'package:pure_live/player/core/source_event_fence.dart';
 import 'package:pure_live/player/core/playback_proxy_policy.dart';
+import 'package:pure_live/player/core/desktop_volume_policy.dart';
 
 @visibleForTesting
 ({int width, int height})? resolveMediaKitDisplaySize(VideoParams params) {
@@ -102,6 +103,13 @@ class MediaKitAdapter
     // of leaving a black Surface behind. mpv's larger default can skip several
     // live packets before the fallback is attempted.
     await native.setProperty('hwdec-software-fallback', '1');
+
+    // Allow the Windows/Linux desktop player to amplify live audio up to the
+    // confirmed 150% ceiling. mpv's default caps `volume` at 130, which would
+    // silently truncate the boosted range. Mobile and macOS keep the default.
+    if (PlatformUtils.isDesktopNotMac) {
+      await native.setProperty('volume-max', '${(DesktopVolumePolicy.maxVolume * 100).round()}');
+    }
 
     final audioOutput = effectiveMpvAudioOutputDriverForPlatform(
       customOutput: SettingsService.to.player.customPlayerOutput.v,
@@ -1123,7 +1131,12 @@ class MediaKitAdapter
 
   @override
   Future<void> setVolume(double volume) async {
-    final vol = (volume * 100).clamp(0.0, 100.0);
+    // Windows/Linux may amplify live audio up to 150% (mpv `volume` is a
+    // percentage and `volume-max` is raised accordingly); every other platform
+    // keeps the safe 100% ceiling.
+    final double maxPercent =
+        (PlatformUtils.isDesktopNotMac ? DesktopVolumePolicy.maxVolume : DesktopVolumePolicy.safeVolume) * 100;
+    final vol = (volume * 100).clamp(0.0, maxPercent);
 
     await _player.setVolume(vol);
   }

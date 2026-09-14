@@ -859,6 +859,8 @@
     "room_volume": "房间音量",
     "room_volume_defaults_desc": "保存手机端和电脑端默认值，并将本设备的音量应用到当前直播间。",
     "room_volume_apply_failed": "应用音量失败，请重试。",
+    "desktop_volume_risk_title": "高音量风险",
+    "desktop_volume_risk_message": "音量已停在 100%。继续调高可能损伤听力；稍停片刻后再次调节，即可进入 100%-150% 区间（仅当前直播间生效）。",
     "reset_default": "恢复默认",
     "webview2_missing_title": "系统组件缺失",
     "webview2_missing_content": "您的 Windows 系统缺少网页核心组件 (WebView2 Runtime)。如果不安装，应用内的网页搜索功能将完全无法使用。\n\n是否立即前往微软官网下载安装？",

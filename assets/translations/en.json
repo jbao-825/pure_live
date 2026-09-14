@@ -858,6 +858,8 @@
     "room_volume": "Room Volume",
     "room_volume_defaults_desc": "Save both platform defaults and apply this device's value to the current room.",
     "room_volume_apply_failed": "Failed to apply volume. Try again.",
+    "desktop_volume_risk_title": "High Volume Risk",
+    "desktop_volume_risk_message": "Volume is paused at 100%. Going louder may damage your hearing. Pause briefly, then adjust again to enter the 100%-150% range (this room only).",
     "reset_default": "Reset Default",
     "webview2_missing_title": "System Component Missing",
     "webview2_missing_content": "Your Windows system is missing the core web component (WebView2 Runtime). Without it, the in-app web search feature will not work.\n\nWould you like to download and install it now?",
