@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:developer';
 
-import 'video_controller_panel.dart';
 import 'iptv_programme_policy.dart';
 
 import 'package:flutter/scheduler.dart';
@@ -14,7 +13,6 @@ import 'package:flame_barrage/flame_barrage.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:pure_live/plugins/db_service.dart';
 import 'package:pure_live/player/utils/fullscreen.dart';
-import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:pure_live/player/core/desktop_volume_policy.dart';
 import 'package:pure_live/player/core/player_manager.dart';
@@ -45,7 +43,6 @@ enum PlayerStatus { idle, loading, playing, error, disposed }
 class PlatformHelper {
   static bool get isMobile => Platform.isAndroid || Platform.isIOS;
   static bool get isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-  static bool get supportsBrightness => Platform.isAndroid || Platform.isIOS;
   static bool get supportsVolumeController => Platform.isAndroid || Platform.isIOS;
   static bool get supportsBatteryMonitoring => Platform.isAndroid || Platform.isIOS;
 }
@@ -425,17 +422,8 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
   late final DanmakuManager _danmakuManager;
 
   // Keys
-  GlobalKey<BrightnessVolumnDargAreaState> brightnessKey = GlobalKey<BrightnessVolumnDargAreaState>();
   final danmuKey = GlobalKey();
   GlobalKey playerKey = GlobalKey();
-
-  // 屏幕亮度
-  ScreenBrightness? _brightnessController;
-  ScreenBrightness? get brightnessController {
-    if (!PlatformHelper.supportsBrightness) return null;
-    _brightnessController ??= ScreenBrightness();
-    return _brightnessController;
-  }
 
   bool get supportWindowFull => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
   late final Future<void> initialization;
@@ -870,20 +858,6 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     } catch (error, stack) {
       log('Set volume failed', name: 'VideoController.Volume', error: error, stackTrace: stack);
       return false;
-    }
-  }
-
-  // 亮度管理
-  Future<double> brightness() async {
-    if (PlatformHelper.supportsBrightness) {
-      return await brightnessController!.application;
-    }
-    throw Exception('Brightness not supported on this platform');
-  }
-
-  void setBrightness(double value) async {
-    if (PlatformHelper.supportsBrightness) {
-      await brightnessController!.setApplicationScreenBrightness(value);
     }
   }
 

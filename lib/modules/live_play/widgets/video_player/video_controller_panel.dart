@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math';
 import 'dart:async';
+
 import 'package:flutter_svg/svg.dart';
 import 'package:flutter/gestures.dart';
 import 'package:remixicon/remixicon.dart';
@@ -29,7 +30,6 @@ import 'package:pure_live/modules/live_play/widgets/video_player/iptv_schedule_d
 import 'package:pure_live/modules/live_play/widgets/layout/portrait_fullscreen_interaction.dart';
 import 'package:pure_live/modules/live_play/widgets/video_player/portrait_playback_picker_dialog.dart';
 import 'package:pure_live/modules/live_play/widgets/local_interaction/local_danmaku_style_editor.dart';
-
 
 @visibleForTesting
 enum TopActionLeadingSlot { back, datetime, battery }
@@ -256,7 +256,7 @@ class _VideoControllerPanelState extends State<VideoControllerPanel> {
                           : controller.toggleFullScreen();
                     }
                   },
-                  child: BrightnessVolumnDargArea(controller: controller),
+                  child: VolumeDargArea(controller: controller),
                 ),
                 LockButton(controller: controller),
                 const PortraitStreamDiagnosticsBadge(),
@@ -751,7 +751,7 @@ class DanmakuViewer extends StatelessWidget {
       return FlameBarrageWidget(
         controller: controller.danmakuController,
         // Video gestures own the full surface and forward only hits on actual
-        // barrage bounds, so volume/brightness/double-tap remain responsive.
+        // barrage bounds, so volume/double-tap remain responsive.
         enablePointerEvents: false,
         config: BarrageConfig(
           emitInterval: 0.05,
@@ -784,16 +784,19 @@ class DanmakuViewer extends StatelessWidget {
   }
 }
 
-class BrightnessVolumnDargArea extends StatefulWidget {
-  const BrightnessVolumnDargArea({super.key, required this.controller});
+class VolumeDargArea extends StatefulWidget {
+  const VolumeDargArea({super.key, required this.controller});
 
   final VideoController controller;
 
   @override
-  State<BrightnessVolumnDargArea> createState() => BrightnessVolumnDargAreaState();
+  State<VolumeDargArea> createState() => VolumeDargAreaState();
 }
 
-/// Brightness / volume card overlaying the video surface.
+/// Volume card overlaying the video surface.
+///
+/// Only the right half of the surface answers a drag; the left half is inert.
+/// Screen brightness used to be attached to the left half and has been removed.
 ///
 /// ## HUD lifetime
 ///
@@ -829,7 +832,7 @@ class BrightnessVolumnDargArea extends StatefulWidget {
 ///   go higher.
 /// - **keyboard** — one key press, which has a real release of its own.
 /// - **the overlay volume bar** — one drag gesture.
-class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
+class VolumeDargAreaState extends State<VolumeDargArea> {
   VideoController get controller => widget.controller;
 
   /// Auto-hide delay after an adjustment.
@@ -843,7 +846,6 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
 
   Timer? _hideBVTimer;
   bool _hideBVStuff = true;
-  bool _isDargLeft = true;
   double _updateDargVarVal = 1.0;
 
   /// Unquantized accumulator for the running adjustment.
@@ -871,7 +873,6 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
 
   void updateVolumn(double? volume) {
     if (volume == null || !volume.isFinite) return;
-    _isDargLeft = false;
     setState(() {
       _updateDargVarVal = volume;
       _adjustValue = volume;
@@ -913,41 +914,24 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
     final width = size.width;
     final height = size.height;
 
+    // Screen brightness used to own the left half of the surface; with it
+    // removed the left half is inert, which also matches how the desktop build
+    // behaved before (it skipped left-side drags entirely).
     final dargLeft = (position.dx > (width / 2)) ? false : true;
 
-    if (Platform.isWindows && dargLeft) return;
+    if (dargLeft) return;
 
-    if (_hideBVStuff || _isDargLeft != dargLeft) {
-      _isDargLeft = dargLeft;
-      if (_isDargLeft) {
-        if (PlatformUtils.isMobile) {
-          double v = await controller.brightness();
-          if (!mounted) return;
-          setState(() => _updateDargVarVal = v);
-        }
-      } else {
-        double? v = await controller.volume();
-        if (!mounted) return;
-        setState(() => _updateDargVarVal = v ?? 1.0);
-      }
-      // The card was hidden (or the side changed), so the shown value was just
-      // re-read from the controller: restart the sub-step accumulator from it.
+    if (_hideBVStuff) {
+      double? v = await controller.volume();
+      if (!mounted) return;
+      setState(() => _updateDargVarVal = v ?? 1.0);
+      // The card was hidden, so the shown value was just re-read from the
+      // controller: restart the sub-step accumulator from it.
       _adjustValue = _updateDargVarVal;
     }
 
     double sensitivity = 0.25;
     double deltaValue = -(delta.dy / (height / 2)) * sensitivity;
-
-    if (_isDargLeft) {
-      // Brightness keeps the plain 0-100% range without any gate.
-      _adjustValue = (_adjustValue + deltaValue).clamp(0.0, 1.0);
-      if ((_adjustValue - _updateDargVarVal).abs() > 0.001) {
-        controller.setBrightness(_adjustValue);
-        setState(() => _updateDargVarVal = _adjustValue);
-      }
-      _refreshBvHud();
-      return;
-    }
 
     // Desktop volume: route the adjustment through the room's high-volume gate,
     // so 100%-150% stays behind the explicit second-adjustment confirmation. The
@@ -955,10 +939,7 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
     // up this is the same adjustment, so a continuous roll parks on the cap; once
     // it has faded the next notch starts a new one and may confirm the boost.
     _adjustValue = (_adjustValue + deltaValue).clamp(0.0, DesktopVolumePolicy.maxVolume);
-    final request = controller.requestDesktopVolume(
-      startsNewAdjustment: startsNewAdjustment,
-      target: _adjustValue,
-    );
+    final request = controller.requestDesktopVolume(startsNewAdjustment: startsNewAdjustment, target: _adjustValue);
     final double applied = request.applied;
     if (request.heldAtCap) {
       // The gate refused this adjustment's request and parked the value on the
@@ -1009,28 +990,18 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
 
   @override
   Widget build(BuildContext context) {
-    IconData iconData;
-    if (_isDargLeft) {
-      iconData = _updateDargVarVal <= 0
-          ? Icons.brightness_low
-          : _updateDargVarVal < 0.5
-          ? Icons.brightness_medium
-          : Icons.brightness_high;
-    } else {
-      iconData = _updateDargVarVal <= 0
-          ? Icons.volume_mute
-          : _updateDargVarVal < 0.5
-          ? Icons.volume_down
-          : Icons.volume_up;
-    }
+    final IconData iconData = _updateDargVarVal <= 0
+        ? Icons.volume_mute
+        : _updateDargVarVal < 0.5
+        ? Icons.volume_down
+        : Icons.volume_up;
 
     final int percentage = (_updateDargVarVal * 100).round();
     // A boosted level gets marked amber so it is distinguishable from a plain
     // reading. So does a 100% that is still waiting for its confirming
     // adjustment, which is what makes the stop look intentional.
-    final bool boosted = !_isDargLeft && _updateDargVarVal > DesktopVolumePolicy.safeVolume;
+    final bool boosted = _updateDargVarVal > DesktopVolumePolicy.safeVolume;
     final bool waitingAtCap =
-        !_isDargLeft &&
         (_updateDargVarVal - DesktopVolumePolicy.safeVolume).abs() < 0.001 &&
         controller.desktopVolumeGate.isAwaitingConfirmation;
     final Color levelColor = boosted || waitingAtCap ? const Color(0xFFFFB300) : Colors.white;
@@ -1074,14 +1045,14 @@ class BrightnessVolumnDargAreaState extends State<BrightnessVolumnDargArea> {
                         child: SizedBox(
                           width: 100,
                           height: 20,
-                      child: LinearProgressIndicator(
-                        // The track maps the safe 0-100% range; a boosted
-                        // session shows its real level through the percentage
-                        // label and the amber color.
-                        value: _updateDargVarVal.clamp(0.0, DesktopVolumePolicy.safeVolume),
-                        backgroundColor: Colors.white38,
-                        valueColor: AlwaysStoppedAnimation(levelColor),
-                      ),
+                          child: LinearProgressIndicator(
+                            // The track maps the safe 0-100% range; a boosted
+                            // session shows its real level through the percentage
+                            // label and the amber color.
+                            value: _updateDargVarVal.clamp(0.0, DesktopVolumePolicy.safeVolume),
+                            backgroundColor: Colors.white38,
+                            valueColor: AlwaysStoppedAnimation(levelColor),
+                          ),
                         ),
                       ),
                     ),

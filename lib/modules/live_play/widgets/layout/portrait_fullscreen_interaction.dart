@@ -40,9 +40,9 @@ bool shouldRestorePortraitPanelFromSwipe({required double upwardDistance, requir
 }
 
 /// Keeps the portrait-fullscreen restore gesture reachable while the visible
-/// bottom controller bar is on top of the full-surface brightness/volume
-/// gesture layer. Child buttons still receive taps; a deliberate upward drag
-/// wins the gesture arena and restores the room panel.
+/// bottom controller bar is on top of the full-surface volume gesture layer.
+/// Child buttons still receive taps; a deliberate upward drag wins the gesture
+/// arena and restores the room panel.
 class PortraitFullscreenRestoreGestureRegion extends StatefulWidget {
   const PortraitFullscreenRestoreGestureRegion({
     super.key,
