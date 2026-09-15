@@ -11,6 +11,7 @@ import 'package:pure_live/core/interface/live_quality_discovery.dart';
 import 'package:pure_live/common/utils/latest_async_value_queue.dart';
 import 'package:pure_live/player/core/live_input_playback_binding.dart';
 import 'package:pure_live/modules/multiview/models/multiview_models.dart';
+import 'package:pure_live/modules/multiview/models/multiview_preset.dart';
 import 'package:pure_live/modules/multiview/cells/multiview_cell_player.dart';
 import 'package:pure_live/modules/live_play/controllers/player_controller.dart';
 import 'package:pure_live/modules/multiview/danmaku/multiview_danmaku_session.dart';
@@ -347,6 +348,15 @@ class MultiviewController extends GetxController {
   final Set<Future<void>> _retiringDiscoveries = {};
   bool _closed = false;
 
+  /// 应用预设的重入保护。
+  ///
+  /// UI 侧同时禁用入口；这里兜底，避免快速连点两份预设导致布局与房间
+  /// 交错成第三种状态。
+  bool _applyingPreset = false;
+
+  /// 是否有预设正在应用（UI 据此禁用入口）。
+  bool get isApplyingPreset => _applyingPreset;
+
   void _retireDiscovery(LiveQualityDiscoveryScope scope) {
     late final Future<void> pending;
     pending = scope.close().whenComplete(() => _retiringDiscoveries.remove(pending));
@@ -516,60 +526,81 @@ class MultiviewController extends GetxController {
     return perCellMode || index == _selectedCellIndex;
   }
 
-  /// 切换布局。
+  /// 切换布局；可选地把格子数对齐到目标值。
   ///
   /// 缩容时按同一条释放路径销毁多余格；保留前 N 格的播放状态不重建。
   /// 扩容时追加空白格。Windows 已有格由视图层按实际 cell viewport
   /// 防抖重设渲染目标，无需重建播放器或重新解析直播源。
-  Future<void> setLayout(MultiviewLayout newLayout) async {
-    if (newLayout == layout.value) return;
+  ///
+  /// [cellCount] 缺省等于新布局的固定容量，此时语义与旧版逐字一致：布局
+  /// 未变即不做任何事——focus 经 addCell 扩到多格后再点同一布局不会缩容。
+  /// 显式传入时按目标值增删尾部格子，用于恢复场景预设这类"布局 + 动态
+  /// 格数"需一并还原的场合；容量范围内的已有格子原样保留，不重建播放器。
+  Future<void> setLayout(MultiviewLayout newLayout, {int? cellCount}) async {
     final capacity = newLayout.capacity;
+    final target = (cellCount ?? capacity).clamp(capacity, maxCellCount);
+    if (newLayout == layout.value && (cellCount == null || target == cells.length)) return;
 
     // Cancel every removed slot before waiting for any one slow cleanup.
-    await Future.wait([for (var i = capacity; i < _players.length; i++) _releaseSlot(i)]);
+    await Future.wait([for (var i = target; i < _players.length; i++) _releaseSlot(i)]);
 
-    while (cells.length > capacity) {
-      _playingSubs.removeLast()?.cancel();
-      playingFlags.removeLast();
-      cells.removeLast();
-      _players.removeLast();
-      _cellEpochs.removeLast();
-      // 缩容后该 slot 不再存在：断开其弹幕会话并清空残留弹幕。
-      unawaited(_danmakuSessions.removeLast().disconnect());
-      _barrageControllers.removeLast().clear();
+    while (cells.length > target) {
+      _shrinkSlot();
     }
-    while (cells.length < capacity) {
-      final index = cells.length;
-      cells.add(MultiviewCellState.empty(index));
-      _players.add(null);
-      _cellEpochs.add(0);
-      playingFlags.add(false);
-      _playingSubs.add(null);
-      _danmakuSessions.add(_createDanmakuSession(index));
-      _barrageControllers.add(BarrageController());
+    while (cells.length < target) {
+      _appendEmptyCell();
     }
 
     layout.value = newLayout;
 
     // 进入 focus 布局时视觉跟随既有声源（零音频扰动），
     // 避免出现「大画面无声、声音来自某个小格」的失同步。
-    // 进入 focus 时容量为 4，_audioFocusIndex 必在其内，故先同步后钳制安全。
+    // 先同步后钳制：缩容可能让 _audioFocusIndex 越界，由下方钳制兜住。
     if (newLayout == MultiviewLayout.focus) {
       focusedCellIndex.value = _audioFocusIndex.value;
     }
 
-    // 缩容后旧的大画面格可能越界，钳制到新容量内
+    // 缩容后旧的大画面格可能越界，钳制到目标格数内
     // （与页面选台目标 _targetCell 的整改同一模式，防越界）。
-    if (focusedCellIndex.value >= capacity) {
-      focusedCellIndex.value = capacity - 1;
+    // 用 target 而非固定容量：focus 的格数可由 cellCount 扩到固定容量
+    // 以上，此时末尾格同样是合法的大画面格，不该被钳掉。
+    if (focusedCellIndex.value >= target) {
+      focusedCellIndex.value = target - 1;
     }
 
-    if (_audioFocusIndex.value >= capacity) {
+    if (_audioFocusIndex.value >= target) {
       _refocusToFirstPlaying(fallback: 0);
     }
 
     // 布局变化可能改变大画面格（进入/离开 focus），同步弹幕会话。
     unawaited(_syncDanmakuSessions());
+  }
+
+  /// 从尾部裁掉一个格子，并断开其弹幕会话。
+  ///
+  /// 播放器句柄的释放在调用方（[setLayout] 已先批量 [_releaseSlot]）；
+  /// 本方法只做与 cells 平行的各数组收尾，保持它们的长度一致。
+  void _shrinkSlot() {
+    _playingSubs.removeLast()?.cancel();
+    playingFlags.removeLast();
+    cells.removeLast();
+    _players.removeLast();
+    _cellEpochs.removeLast();
+    // 缩容后该 slot 不再存在：断开其弹幕会话并清空残留弹幕。
+    unawaited(_danmakuSessions.removeLast().disconnect());
+    _barrageControllers.removeLast().clear();
+  }
+
+  /// 在尾部追加一个空格，含独立的弹幕会话与渲染入口。
+  void _appendEmptyCell() {
+    final index = cells.length;
+    cells.add(MultiviewCellState.empty(index));
+    _players.add(null);
+    _cellEpochs.add(0);
+    playingFlags.add(false);
+    _playingSubs.add(null);
+    _danmakuSessions.add(_createDanmakuSession(index));
+    _barrageControllers.add(BarrageController());
   }
 
   /// focus 布局下追加一个空白小格（动态容量，滚动呈现由 UI 层负责）。
@@ -582,14 +613,7 @@ class MultiviewController extends GetxController {
     if (!canAddCell) {
       throw StateError('multiview: cell limit reached ($maxCellCount)');
     }
-    final index = cells.length;
-    cells.add(MultiviewCellState.empty(index));
-    _players.add(null);
-    _cellEpochs.add(0);
-    playingFlags.add(false);
-    _playingSubs.add(null);
-    _danmakuSessions.add(_createDanmakuSession(index));
-    _barrageControllers.add(BarrageController());
+    _appendEmptyCell();
   }
 
   /// focus 布局下把 [cellIndex] 格晋升为大画面。
@@ -1005,6 +1029,108 @@ class MultiviewController extends GetxController {
   double cellVolume(int cellIndex) {
     RangeError.checkValidIndex(cellIndex, cells, 'cellIndex');
     return _players[cellIndex]?.volume ?? 1.0;
+  }
+
+  /// 把当前画面抓成一份场景快照（不落盘，持久化由预设控制器负责）。
+  ///
+  /// 只记录可恢复的部分：布局、大画面格、各格房间与音量、两个开关。
+  /// 解析中或失败的格子同样按其 room 记录——房间身份与当下成败无关。
+  MultiviewPreset createPreset(String name) {
+    final snapshotCells = <MultiviewPresetCell?>[];
+    for (var index = 0; index < cells.length; index++) {
+      final room = cells[index].room;
+      snapshotCells.add(room == null ? null : MultiviewPresetCell(room: room, volume: cellVolume(index)));
+    }
+
+    return MultiviewPreset(
+      id: MultiviewPreset.newId(),
+      name: name,
+      layout: layout.value,
+      focusedCellIndex: focusedCellIndex.value,
+      cells: snapshotCells,
+      smallCellsLowQuality: smallCellsLowQuality.value,
+      danmakuEnabled: danmakuEnabled.value,
+    );
+  }
+
+  /// 应用场景预设。
+  ///
+  /// 步骤顺序有讲究：降质开关与大画面格必须先于换房落定，因为 [assignRoom]
+  /// 正是按 `smallCellsLowQuality` + `focusedCellIndex` 决定小格取不取最低档。
+  /// 已播放同一房间的格子跳过（[assignRoom] 是无条件重建），否则每按一次
+  /// 预设都会把整屏重新拉流。音量则相反，必须晚于换房，见下方说明。
+  Future<void> applyPreset(MultiviewPreset preset) async {
+    if (_closed || isClosed || _applyingPreset) return;
+    _applyingPreset = true;
+    try {
+      await setLayout(preset.layout, cellCount: preset.cellCount);
+      if (_closed || isClosed) return;
+
+      final limit = preset.cellCount < cells.length ? preset.cellCount : cells.length;
+
+      // 空位先清掉：removeCell 会重定位大画面格，先清可免去事后再纠正一次。
+      for (var index = 0; index < limit; index++) {
+        if (preset.cells[index] == null) removeCell(index);
+      }
+
+      smallCellsLowQuality.value = preset.smallCellsLowQuality;
+      danmakuEnabled.value = preset.danmakuEnabled;
+      if (preset.layout == MultiviewLayout.focus) {
+        focusedCellIndex.value = preset.focusedCellIndex.clamp(0, cells.length - 1);
+      }
+
+      // 换房：各格并发解析（彼此不共享状态），总耗时取决于最慢的一格。
+      final pending = <Future<void>>[];
+      for (var index = 0; index < limit; index++) {
+        final wanted = preset.cells[index];
+        if (wanted == null) continue;
+        // 站点已不被支持：该位留作空格，不让一格失败中断整次恢复。
+        if (!Sites.isSupported(wanted.room.platform ?? '')) continue;
+        if (cells[index].room?.hasSameIdentity(wanted.room) == true) continue;
+        pending.add(assignRoom(index, wanted.room));
+      }
+      if (pending.isNotEmpty) {
+        try {
+          await Future.wait(pending);
+        } catch (error, stackTrace) {
+          developer.log(
+            'MultiviewController: some preset cells failed to start',
+            name: 'MultiviewController',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+        if (_closed || isClosed) return;
+      }
+
+      // 音量必须晚于换房：assignRoom 会重建播放器（默认音量、静音起播），
+      // 先写会被新实例覆盖。且只写已起播的格——未起播的格没有播放器，
+      // setCellVolume 会直接抛。
+      for (var index = 0; index < limit; index++) {
+        final wanted = preset.cells[index];
+        if (wanted == null || cells[index].status != MultiviewCellStatus.playing) continue;
+        try {
+          await setCellVolume(index, wanted.volume);
+        } catch (error, stackTrace) {
+          developer.log(
+            'MultiviewController: restoring preset volume failed for cell $index',
+            name: 'MultiviewController',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }
+      }
+      if (_closed || isClosed) return;
+
+      // 恢复声音来源：focus 跟随大画面格（与 promoteCell 的约定一致），
+      // 其余布局落在第一个有房间的格——非逐格模式下这才决定谁出声。
+      final focusTarget = preset.layout == MultiviewLayout.focus ? preset.focusedCellIndex : preset.firstFilledIndex;
+      if (focusTarget >= 0 && focusTarget < cells.length && cells[focusTarget].room != null) {
+        await setAudioFocus(focusTarget);
+      }
+    } finally {
+      _applyingPreset = false;
+    }
   }
 
   /// 释放指定格并回到 empty。

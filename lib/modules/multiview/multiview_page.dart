@@ -10,7 +10,9 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:pure_live/player/utils/fullscreen.dart';
 import 'package:pure_live/common/global/platform_utils.dart';
 import 'package:pure_live/modules/multiview/multiview_controller.dart';
+import 'package:pure_live/modules/multiview/multiview_preset_controller.dart';
 import 'package:pure_live/modules/multiview/models/multiview_models.dart';
+import 'package:pure_live/modules/multiview/models/multiview_preset.dart';
 import 'package:pure_live/modules/live_play/controllers/player_state.dart';
 import 'package:pure_live/player/widgets/video_output_viewport_sizer.dart';
 import 'package:pure_live/modules/live_play/pages/danmaku_settings_page.dart';
@@ -25,6 +27,9 @@ import 'package:pure_live/modules/multiview/danmaku/multiview_danmaku_settings_b
 /// 只影响 chrome 显隐，不触碰布局/格子状态；返回手势与 Esc 均沿
 /// fullscreen/immersive → normal → 退出页面 的单一路径回退。
 enum _DisplayMode { normal, immersive, fullscreen }
+
+/// 场景预设条目的尾部菜单动作。
+enum _PresetAction { overwrite, rename, delete }
 
 /// 多画面同看页面。
 ///
@@ -59,6 +64,12 @@ class _MultiviewPageState extends State<MultiviewPage> {
   /// 音量步进（滚轮 / 方向键）：5% 一档。
   static const double _volumeStep = 0.05;
 
+  /// 预设名称输入框的长度上限。
+  static const int _presetNameMaxLength = 20;
+
+  /// 预设列表在弹层中的最大高度，超出滚动。
+  static const double _presetListMaxHeight = 320;
+
   /// 当前显示模式；仅 chrome 显隐差异，见 [_DisplayMode]。
   _DisplayMode _displayMode = _DisplayMode.normal;
 
@@ -83,6 +94,9 @@ class _MultiviewPageState extends State<MultiviewPage> {
   final Map<int, GlobalKey> _cellKeys = {};
 
   MultiviewController get controller => Get.find<MultiviewController>();
+
+  /// 场景预设的持久化控制器（由 MultiviewBinding 注册）。
+  MultiviewPresetController get presetController => Get.find<MultiviewPresetController>();
 
   GlobalKey _cellKey(int index) => _cellKeys.putIfAbsent(index, () => GlobalKey(debugLabel: 'multiview_cell_$index'));
 
@@ -366,6 +380,206 @@ class _MultiviewPageState extends State<MultiviewPage> {
     );
   }
 
+  /// 场景预设面板：把当前画面存成一组场景，或一键恢复已存场景。
+  void _showPresetSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Obx(() {
+          final presets = presetController.presets.value;
+          final canAdd = presetController.canAdd;
+          final theme = Theme.of(context);
+
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Remix.add_line),
+                title: Text(i18n('multiview_preset_save_current')),
+                subtitle: canAdd ? null : Text(i18n('multiview_preset_limit_reached')),
+                enabled: canAdd,
+                onTap: canAdd
+                    ? () {
+                        Navigator.of(sheetContext).pop();
+                        unawaited(_saveCurrentAsPreset());
+                      }
+                    : null,
+              ),
+              const Divider(height: 1),
+              if (presets.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 28),
+                  child: Text(
+                    i18n('multiview_preset_empty'),
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                )
+              else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: _presetListMaxHeight),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: presets.length,
+                    itemBuilder: (_, index) => _buildPresetTile(sheetContext, presets[index]),
+                  ),
+                ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+
+  /// 单条预设：点击即恢复；尾部菜单提供更新 / 重命名 / 删除。
+  Widget _buildPresetTile(BuildContext sheetContext, MultiviewPreset preset) {
+    return ListTile(
+      leading: const Icon(Remix.layout_grid_line),
+      title: Text(
+        preset.name.trim().isEmpty ? i18n('multiview_preset_unnamed') : preset.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(_presetSubtitle(preset), maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: () {
+        Navigator.of(sheetContext).pop();
+        unawaited(_applyPreset(preset));
+      },
+      trailing: PopupMenuButton<_PresetAction>(
+        tooltip: '',
+        onSelected: (action) {
+          switch (action) {
+            case _PresetAction.overwrite:
+              _overwritePreset(preset);
+            case _PresetAction.rename:
+              unawaited(_renamePreset(preset));
+            case _PresetAction.delete:
+              unawaited(_confirmDeletePreset(preset));
+          }
+        },
+        itemBuilder: (_) => <PopupMenuEntry<_PresetAction>>[
+          PopupMenuItem<_PresetAction>(value: _PresetAction.overwrite, child: Text(i18n('multiview_preset_overwrite'))),
+          PopupMenuItem<_PresetAction>(value: _PresetAction.rename, child: Text(i18n('multiview_preset_rename'))),
+          PopupMenuItem<_PresetAction>(value: _PresetAction.delete, child: Text(i18n('multiview_preset_delete'))),
+        ],
+      ),
+    );
+  }
+
+  /// 恢复场景：先收起全部控制条（格子下标含义已变），再交给控制器重排。
+  Future<void> _applyPreset(MultiviewPreset preset) async {
+    if (_controlsVisible.isNotEmpty) setState(_controlsVisible.clear);
+
+    await controller.applyPreset(preset);
+    if (!mounted) return;
+
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(i18n('multiview_preset_applied'))));
+  }
+
+  /// 把当前画面存为新预设。
+  Future<void> _saveCurrentAsPreset() async {
+    final fallbackName = '${i18n('multiview_preset_default_name')} ${presetController.list.length + 1}';
+    final name = await _promptPresetName(
+      title: i18n('multiview_preset_save_current'),
+      confirmLabel: i18n('save'),
+      initial: fallbackName,
+    );
+    if (name == null) return;
+
+    if (presetController.add(controller.createPreset(name))) return;
+
+    // 只有在达到上限时才会走到这里（列表已在面板里挡过一次，此处兜底）。
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(i18n('multiview_preset_limit_reached'))));
+  }
+
+  /// 用当前画面覆盖该预设，保留其 id 与名称。
+  void _overwritePreset(MultiviewPreset preset) {
+    presetController.overwrite(preset.id, controller.createPreset(preset.name));
+  }
+
+  Future<void> _renamePreset(MultiviewPreset preset) async {
+    final name = await _promptPresetName(
+      title: i18n('multiview_preset_rename'),
+      confirmLabel: i18n('confirm'),
+      initial: preset.name,
+    );
+    if (name == null) return;
+    presetController.rename(preset.id, name);
+  }
+
+  Future<void> _confirmDeletePreset(MultiviewPreset preset) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(i18n('multiview_preset_delete')),
+        content: Text(i18n('multiview_preset_delete_confirm')),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text(i18n('cancel'))),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: Text(i18n('delete'))),
+        ],
+      ),
+    );
+    if (confirmed == true) presetController.removeById(preset.id);
+  }
+
+  /// 名称输入框：取消返回 null，留空则沿用 [initial]。
+  ///
+  /// 留空回落默认名而非拒绝——用户已经点了保存，不该因为没填名字白做一次。
+  Future<String?> _promptPresetName({
+    required String title,
+    required String confirmLabel,
+    required String initial,
+  }) async {
+    final textController = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          maxLength: _presetNameMaxLength,
+          textInputAction: TextInputAction.done,
+          decoration: InputDecoration(hintText: i18n('multiview_preset_name_hint')),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: Text(i18n('cancel'))),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(textController.text), child: Text(confirmLabel)),
+        ],
+      ),
+    );
+    textController.dispose();
+
+    if (result == null) return null;
+    final trimmed = result.trim();
+    return trimmed.isEmpty ? initial : trimmed;
+  }
+
+  /// 副标题：布局 + 各格房间昵称，便于一眼分辨相似场景。
+  String _presetSubtitle(MultiviewPreset preset) {
+    final names = <String>[];
+    for (final cell in preset.cells) {
+      final room = cell?.room;
+      if (room == null) continue;
+
+      final nick = room.nick?.trim() ?? '';
+      final label = nick.isNotEmpty ? nick : (room.title?.trim() ?? '');
+      if (label.isNotEmpty) names.add(label);
+    }
+
+    final layoutLabel = _presetLayoutLabel(preset.layout);
+    return names.isEmpty ? layoutLabel : '$layoutLabel · ${names.join(' / ')}';
+  }
+
+  static String _presetLayoutLabel(MultiviewLayout layout) => switch (layout) {
+    MultiviewLayout.single => '1×1',
+    MultiviewLayout.dual => '1×2',
+    MultiviewLayout.quad => '2×2',
+    MultiviewLayout.focus => '1+3',
+  };
+
   /// 清晰度列表底部弹窗（长按菜单路径）；点选后换档，当前档打勾。
   void _showQualitySheet(MultiviewCellState state) {
     final qualities = state.qualities;
@@ -570,6 +784,11 @@ class _MultiviewPageState extends State<MultiviewPage> {
               onPressed: isFocusLayout ? () => controller.smallCellsLowQuality.toggle() : null,
             );
           }),
+          IconButton(
+            tooltip: i18n('multiview_preset'),
+            icon: const Icon(Remix.bookmark_line, size: 22),
+            onPressed: _showPresetSheet,
+          ),
         ],
       );
     }

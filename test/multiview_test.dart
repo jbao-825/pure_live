@@ -1,6 +1,7 @@
 import 'package:pure_live/core/common/hls_source_query_policy.dart';
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:pure_live/core/interface/live_site.dart';
 import 'package:pure_live/core/sites.dart';
@@ -13,6 +14,7 @@ import 'package:pure_live/core/interface/live_danmaku.dart';
 import 'package:pure_live/model/live_play_quality.dart';
 import 'package:pure_live/modules/multiview/cells/multiview_cell_player.dart';
 import 'package:pure_live/modules/multiview/models/multiview_models.dart';
+import 'package:pure_live/modules/multiview/models/multiview_preset.dart';
 import 'package:pure_live/modules/multiview/multiview_controller.dart';
 
 /// 记录调用序列的假单格播放器。
@@ -1474,6 +1476,168 @@ void main() {
       for (final name in ['p2', 'p3']) {
         expect(harness.log.where((e) => e.startsWith('$name:')), contains('$name:pDispose'));
       }
+    });
+  });
+
+  group('多画面场景预设', () {
+    test('createPreset 记录布局、房间、音量与开关', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.focus);
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await controller.setCellVolume(0, 0.4);
+      controller.smallCellsLowQuality.value = true;
+      await harness.pump();
+
+      final preset = controller.createPreset('夜间');
+
+      expect(preset.name, '夜间');
+      expect(preset.layout, MultiviewLayout.focus);
+      expect(preset.cellCount, MultiviewLayout.focus.capacity);
+      expect(preset.cells[0]!.room.roomId, 'r1');
+      expect(preset.cells[1]!.room.roomId, 'r2');
+      // 未分配的位次保留为 null：恢复时房间不会整体前移。
+      expect(preset.cells[2], isNull);
+      expect(preset.cells[3], isNull);
+      expect(preset.cells[0]!.volume, closeTo(0.4, 1e-9));
+      expect(preset.smallCellsLowQuality, isTrue);
+      expect(preset.danmakuEnabled, isTrue);
+    });
+
+    test('applyPreset 恢复布局、房间与音量', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.dual);
+      await controller.assignRoom(0, _room('a1'));
+      await controller.setCellVolume(0, 0.25);
+      await harness.pump();
+      final preset = controller.createPreset('双人');
+
+      // 打乱现状：换布局、换房间、改音量。
+      await controller.setLayout(MultiviewLayout.quad);
+      await controller.assignRoom(0, _room('b1'));
+      await controller.assignRoom(3, _room('b4'));
+      await controller.setCellVolume(0, 0.9);
+      await harness.pump();
+
+      await controller.applyPreset(preset);
+      await harness.pump();
+
+      expect(controller.layout.value, MultiviewLayout.dual);
+      expect(controller.cells, hasLength(MultiviewLayout.dual.capacity));
+      expect(controller.cells[0].room!.roomId, 'a1');
+      expect(controller.cells[1].room, isNull);
+      expect(controller.cellVolume(0), closeTo(0.25, 1e-9));
+    });
+
+    test('applyPreset 对已在播放的同一房间不重建播放器', () async {
+      final harness = _Harness(perCellMode: true);
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await harness.pump();
+      final preset = controller.createPreset('原样');
+      final createdBefore = harness.players.length;
+
+      await controller.applyPreset(preset);
+      await harness.pump();
+
+      expect(harness.players, hasLength(createdBefore));
+      expect(harness.log.where((e) => e.endsWith(':pDispose')), isEmpty);
+    });
+
+    test('applyPreset 把 focus 的多余格子收回预设格数', () async {
+      final harness = _Harness(perCellMode: true, maxCellCount: 6);
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.focus);
+      await controller.assignRoom(0, _room('r0'));
+      await harness.pump();
+      final preset = controller.createPreset('四格');
+      expect(preset.cellCount, MultiviewLayout.focus.capacity);
+
+      await controller.addCell();
+      expect(controller.cells, hasLength(MultiviewLayout.focus.capacity + 1));
+
+      await controller.applyPreset(preset);
+      await harness.pump();
+
+      expect(controller.layout.value, MultiviewLayout.focus);
+      expect(controller.cells, hasLength(MultiviewLayout.focus.capacity));
+      expect(controller.cells[0].room!.roomId, 'r0');
+    });
+
+    test('MultiviewPreset JSON 往返保持内容与空位次', () {
+      final preset = MultiviewPreset(
+        id: 'p1',
+        name: '测试',
+        layout: MultiviewLayout.focus,
+        focusedCellIndex: 2,
+        cells: [
+          MultiviewPresetCell(room: _room('r1'), volume: 0.3),
+          null,
+          MultiviewPresetCell(room: _room('r3'), volume: 1.0),
+        ],
+        smallCellsLowQuality: true,
+        danmakuEnabled: false,
+      );
+
+      final restored = MultiviewPreset.fromJson(jsonDecode(jsonEncode(preset.toJson())));
+
+      expect(restored, isNotNull);
+      expect(restored!.id, 'p1');
+      expect(restored.name, '测试');
+      expect(restored.layout, MultiviewLayout.focus);
+      expect(restored.focusedCellIndex, 2);
+      expect(restored.cells, hasLength(3));
+      expect(restored.cells[0]!.room.roomId, 'r1');
+      expect(restored.cells[0]!.volume, closeTo(0.3, 1e-9));
+      expect(restored.cells[1], isNull);
+      expect(restored.cells[2]!.room.roomId, 'r3');
+      expect(restored.smallCellsLowQuality, isTrue);
+      expect(restored.danmakuEnabled, isFalse);
+      expect(restored.firstFilledIndex, 0);
+    });
+
+    test('预设解析丢弃损坏条目并归一化非法值', () {
+      // 缺 id 的条目无法定位，整条丢弃。
+      expect(MultiviewPreset.fromJson(<String, dynamic>{'name': '无 id'}), isNull);
+
+      final restored = MultiviewPreset.fromJson(<String, dynamic>{
+        'id': 'p2',
+        'name': 'x',
+        'layout': '不存在的布局',
+        'focusedCellIndex': -3,
+        'cells': <dynamic>[
+          // 房间身份不完整 → 该位按空格处理，但不影响整条预设。
+          <String, dynamic>{
+            'room': <String, dynamic>{'roomId': '', 'platform': ''},
+            'volume': 0.5,
+          },
+          <String, dynamic>{
+            'room': <String, dynamic>{'roomId': 'ok', 'platform': 'bilibili'},
+            'volume': 'oops',
+          },
+        ],
+        'smallCellsLowQuality': 'yes',
+      });
+
+      expect(restored, isNotNull);
+      expect(restored!.layout, MultiviewLayout.quad);
+      expect(restored.focusedCellIndex, 0);
+      expect(restored.cells[0], isNull);
+      expect(restored.cells[1]!.room.roomId, 'ok');
+      expect(restored.cells[1]!.volume, 1.0);
+      expect(restored.smallCellsLowQuality, isFalse);
+      expect(restored.firstFilledIndex, 1);
+    });
+
+    test('预设音量归一化到 0-1', () {
+      expect(normalizePresetVolume(2.5), 1.0);
+      expect(normalizePresetVolume(-1), 0.0);
+      expect(normalizePresetVolume(null), 1.0);
+      expect(normalizePresetVolume('abc'), 1.0);
+      expect(normalizePresetVolume(0.42), closeTo(0.42, 1e-9));
     });
   });
 }
