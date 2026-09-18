@@ -2,6 +2,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:pure_live/player/core/playback_source.dart';
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:drift/native.dart';
 import 'package:pure_live/core/iptv/local/database.dart';
@@ -945,6 +946,58 @@ void main() {
     expect(messages, hasLength(1));
     controller.dispose();
   });
+
+  test(
+    'a desktop room opens in the window-fill presentation shared with the expand control',
+    () async {
+      final room = LiveRoom(platform: 'fixture', roomId: 'window-fill', link: 'https://fixture/live');
+      final manager = _FakePlayerManager(room, null);
+      final live = _FakeLivePlayController();
+      final controller = _controller(
+        room: room,
+        manager: manager,
+        reuseCurrentSession: false,
+        onSourceCommitted: (_) {},
+        livePlayController: live,
+      );
+      addTearDown(manager.disposeFixture);
+      addTearDown(controller.dispose);
+
+      await controller.initialization;
+
+      // The room entry applies the same state the control bar's expand action
+      // produces, and never stacks fullscreen on top of it.
+      expect(live.widescreenCalls, 1);
+      expect(live.normalScreenCalls, 0);
+      expect(GlobalPlayerState.to.isWindowFullscreen.value, isTrue);
+      expect(GlobalPlayerState.to.isFullscreen.value, isFalse);
+    },
+    skip: Platform.isWindows ? null : 'Windows-only room presentation',
+  );
+
+  test(
+    'a retained session re-attached after the floating window keeps its presentation',
+    () async {
+      final room = LiveRoom(platform: 'fixture', roomId: 'float-return', link: 'https://fixture/live');
+      final manager = _FakePlayerManager(room, _commit(revision: 2, room: room, url: room.link!));
+      final live = _FakeLivePlayController();
+      final controller = _controller(
+        room: room,
+        manager: manager,
+        reuseCurrentSession: true,
+        onSourceCommitted: (_) {},
+        livePlayController: live,
+      );
+      addTearDown(manager.disposeFixture);
+      addTearDown(controller.dispose);
+
+      await controller.initialization;
+
+      expect(live.widescreenCalls, 0);
+      expect(GlobalPlayerState.to.isWindowFullscreen.value, isFalse);
+    },
+    skip: Platform.isWindows ? null : 'Windows-only room presentation',
+  );
 }
 
 VideoController _controller({
@@ -1230,6 +1283,18 @@ class _FakeLivePlayController implements LivePlayController {
   final returnLiveEntered = Completer<void>();
   int returnLiveCalls = 0;
   IptvPlaybackSwitchResult returnLiveResult = IptvPlaybackSwitchResult.started;
+
+  /// The room-entry default presentation owns the window-fill state through the
+  /// same controller calls the visible control uses, so every fixture needs
+  /// them instead of the inherited `noSuchMethod` throw.
+  int widescreenCalls = 0;
+  int normalScreenCalls = 0;
+
+  @override
+  void setWidescreen() => widescreenCalls++;
+
+  @override
+  void setNormalScreen() => normalScreenCalls++;
 
   @override
   Future<IptvPlaybackSwitchResult> startCatchUp({required String catchUpUrl, int? startTime, int? endTime}) async {

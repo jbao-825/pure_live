@@ -41,6 +41,25 @@ class WindowPresentationSnapshot {
   final bool widescreen;
 }
 
+/// The presentation a live room applies once its player session exists.
+///
+/// Windows defaults to [windowFill], i.e. exactly the state the playback
+/// control bar's 展开播放器 action produces: the player surface owns the whole
+/// window while the video inside keeps its own aspect ratio. A room opened by
+/// a user who enabled the automatic fullscreen preference keeps the existing
+/// fullscreen entry, so the two presentations never stack on the same session.
+enum DefaultRoomPresentation { none, windowFill, fullscreen }
+
+/// Kept free of `Platform` reads so both platform branches stay reachable from
+/// a test on any host.
+DefaultRoomPresentation resolveDefaultRoomPresentation({
+  required bool isWindows,
+  required bool enableFullScreenDefault,
+}) {
+  if (enableFullScreenDefault) return DefaultRoomPresentation.fullscreen;
+  return isWindows ? DefaultRoomPresentation.windowFill : DefaultRoomPresentation.none;
+}
+
 class WindowService {
   static final WindowService _instance = WindowService._internal();
   factory WindowService() => _instance;

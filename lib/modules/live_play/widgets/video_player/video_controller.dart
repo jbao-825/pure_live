@@ -529,7 +529,7 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     }
     if (_isDisposed) return;
 
-    _setupDefaultFullscreen();
+    _setupDefaultPresentation();
 
     if (room.platform == Sites.iptvSite) {
       await loadFullChannelSchedule(room.epgId);
@@ -626,18 +626,45 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     }
   }
 
-  void _setupDefaultFullscreen() {
-    _defaultFullscreenTimer?.cancel();
-    _defaultFullscreenTimer = Timer(_fullscreenDelay, () {
-      _defaultFullscreenTimer = null;
-      if (_isDisposed) return;
-      if (_settingsService.app.enableFullScreenDefault.v) {
-        _enterFullscreenMode();
-      }
-    });
+  /// Applies the room's default presentation once its player session exists.
+  ///
+  /// The window-fill presentation is a pure Dart layout switch, so it is applied
+  /// straight away: delaying it would show the ordinary 16:9 room layout first
+  /// and then rearrange the whole page. Fullscreen keeps its original delay
+  /// because it races the native window transition.
+  void _setupDefaultPresentation() {
+    _defaultPresentationTimer?.cancel();
+    _defaultPresentationTimer = null;
+    if (_isDisposed) return;
+
+    final presentation = resolveDefaultRoomPresentation(
+      isWindows: Platform.isWindows,
+      enableFullScreenDefault: _settingsService.app.enableFullScreenDefault.v,
+    );
+    switch (presentation) {
+      case DefaultRoomPresentation.windowFill:
+        // Only a freshly opened source adopts the room default. A retained
+        // session re-attached after the floating window keeps the presentation
+        // the user left it in, which the floating-window exit already restores.
+        if (!reuseCurrentSession) enterWindowFullScreen();
+      case DefaultRoomPresentation.fullscreen:
+        _defaultPresentationTimer = Timer(_fullscreenDelay, () {
+          _defaultPresentationTimer = null;
+          if (_isDisposed) return;
+          if (_settingsService.app.enableFullScreenDefault.v) {
+            _enterFullscreenMode();
+          }
+        });
+      case DefaultRoomPresentation.none:
+        break;
+    }
   }
 
   void _enterFullscreenMode() {
+    // The two presentations are mutually exclusive. A session whose previous
+    // room was filled keeps the widescreen flag, and entering fullscreen while
+    // it is still set leaves both states active at once.
+    GlobalPlayerState.to.isWindowFullscreen.value = false;
     _livePlayController.setFullScreen();
     enterFullScreen();
     GlobalPlayerState.to.isFullscreen.value = true;
@@ -659,13 +686,13 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
   }
 
   void _cancelAllTimers() {
-    _defaultFullscreenTimer?.cancel();
+    _defaultPresentationTimer?.cancel();
     _controllerTransitionTimer?.cancel();
     _hideVolumeTimer?.cancel();
     _debounceTimer?.cancel();
     showControllerTimer?.cancel();
     _controllerHideDeadlineMs = null;
-    _defaultFullscreenTimer = null;
+    _defaultPresentationTimer = null;
     _controllerTransitionTimer = null;
     _hideVolumeTimer = null;
     _debounceTimer = null;
@@ -1495,7 +1522,10 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     }
   }
 
-  void toggleWindowFullScreen() {
+  /// Controller-bar side effects shared by every presentation switch made from
+  /// the window-fill control: drop the lock, hide the overlay now, and re-arm
+  /// its hide deadline.
+  void _prepareWindowPresentationSwitch() {
     showLocked.value = false;
     stopHideController();
 
@@ -1504,14 +1534,31 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
       _controllerTransitionTimer = null;
       enableController();
     });
+  }
 
-    if (GlobalPlayerState.to.isWindowFullscreen.value) {
-      _livePlayController.setNormalScreen();
-      GlobalPlayerState.to.isWindowFullscreen.value = false;
-    } else {
-      _livePlayController.setWidescreen();
-      GlobalPlayerState.to.isWindowFullscreen.value = true;
+  /// Applies the window-fill presentation of the control bar's 展开播放器 action.
+  ///
+  /// This is the single implementation of "the player owns the whole window", so
+  /// the room-entry default and the visible control cannot drift apart. Unlike
+  /// [toggleWindowFullScreen] it is not a toggle: a session that is already
+  /// filled stays filled instead of collapsing.
+  void enterWindowFullScreen() {
+    _prepareWindowPresentationSwitch();
+    _livePlayController.setWidescreen();
+    GlobalPlayerState.to.isWindowFullscreen.value = true;
+    GlobalPlayerState.to.isFullscreen.value = false;
+    enableController();
+  }
+
+  void toggleWindowFullScreen() {
+    if (!GlobalPlayerState.to.isWindowFullscreen.value) {
+      enterWindowFullScreen();
+      return;
     }
+
+    _prepareWindowPresentationSwitch();
+    _livePlayController.setNormalScreen();
+    GlobalPlayerState.to.isWindowFullscreen.value = false;
     GlobalPlayerState.to.isFullscreen.value = false;
     enableController();
   }
@@ -1564,7 +1611,7 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
   final _legacyControlHoverOwner = Object();
   bool get _isMouseOverController => _controlHoverOwners.isNotEmpty;
   bool _isMouseOverPlayer = false;
-  Timer? _defaultFullscreenTimer;
+  Timer? _defaultPresentationTimer;
   Timer? _controllerTransitionTimer;
   Timer? _debounceTimer;
   Timer? _hideVolumeTimer;
