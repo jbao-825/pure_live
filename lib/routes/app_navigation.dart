@@ -20,10 +20,15 @@ class AppNavigator {
   /// this process is the primary one. A child window reports a non-empty
   /// instance id, so its own taps stay in place - which is also what keeps a
   /// window from spawning further windows.
+  ///
+  /// Deliberately independent of `enableNewWindowPlay`: that setting only
+  /// controls whether the manual "new window" entries are visible, while this
+  /// gate decides whether tapping a room reroutes. Hiding the entries must not
+  /// silently disable the reroute - "no manual entry, always auto-open" is a
+  /// legitimate combination.
   static bool get _opensLiveRoomInNewWindow =>
       Platform.isWindows &&
       AppInitializer().instanceId.isEmpty &&
-      SettingsService.to.app.enableNewWindowPlay.v &&
       SettingsService.to.app.openRoomInNewWindow.v;
 
   /// 跳转至分类详情
