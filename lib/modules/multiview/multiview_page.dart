@@ -61,6 +61,11 @@ class _MultiviewPageState extends State<MultiviewPage> {
   /// 视觉节奏一致），追加格滚动呈现。
   static const int _focusSmallViewportCells = 3;
 
+  /// 纵向堆叠的首屏可见格数：恒为两格，恰好构成本身的 2×1 形态；
+  /// 追加的格向下滚动。行高固定不随格数变化，否则每加一格都会
+  /// 改变既有格子的高度，触发全部视频视图重排。
+  static const int _verticalStackViewportCells = 2;
+
   /// 音量步进（滚轮 / 方向键）：5% 一档。
   static const double _volumeStep = 0.05;
 
@@ -569,15 +574,22 @@ class _MultiviewPageState extends State<MultiviewPage> {
       if (label.isNotEmpty) names.add(label);
     }
 
-    final layoutLabel = _presetLayoutLabel(preset.layout);
+    // 布局记号走枚举的单一来源，新增布局无需在此补分支。
+    final layoutLabel = preset.layout.label;
     return names.isEmpty ? layoutLabel : '$layoutLabel · ${names.join(' / ')}';
   }
 
-  static String _presetLayoutLabel(MultiviewLayout layout) => switch (layout) {
-    MultiviewLayout.single => '1×1',
-    MultiviewLayout.dual => '1×2',
-    MultiviewLayout.quad => '2×2',
-    MultiviewLayout.focus => '1+3',
+  /// 布局选择器的图标。
+  ///
+  /// 图标属于展示层，不进模型：模型只给行列数据与 [MultiviewLayout.label]。
+  /// 注意 Remix 命名与我们的方向语义恰好相反——`layout_column_line` 画的是
+  /// 竖向分列（左右并排），`layout_row_line` 画的是横向分行（上下排列）。
+  static IconData _layoutIcon(MultiviewLayout layout) => switch (layout) {
+    MultiviewLayout.single => Remix.aspect_ratio_line,
+    MultiviewLayout.dual => Remix.layout_column_line,
+    MultiviewLayout.verticalStack => Remix.layout_row_line,
+    MultiviewLayout.quad => Remix.layout_grid_line,
+    MultiviewLayout.focus => Remix.focus_3_line,
   };
 
   /// 清晰度列表底部弹窗（长按菜单路径）；点选后换档，当前档打勾。
@@ -715,11 +727,12 @@ class _MultiviewPageState extends State<MultiviewPage> {
             // 切布局后复位全部控制条：格子下标含义已改变。
             _controlsVisible.clear();
           },
-          segments: const [
-            ButtonSegment(value: MultiviewLayout.single, icon: Icon(Remix.aspect_ratio_line), label: Text('1×1')),
-            ButtonSegment(value: MultiviewLayout.dual, icon: Icon(Remix.layout_column_line), label: Text('1×2')),
-            ButtonSegment(value: MultiviewLayout.quad, icon: Icon(Remix.layout_grid_line), label: Text('2×2')),
-            ButtonSegment(value: MultiviewLayout.focus, icon: Icon(Remix.focus_3_line), label: Text('1+3')),
+          // 由枚举数据驱动：新增布局只需改 MultiviewLayout 一处，
+          // 标签同样取自枚举的 label。纵向堆叠仅在 Windows 提供入口。
+          segments: [
+            for (final value in MultiviewLayout.values)
+              if (value != MultiviewLayout.verticalStack || controller.verticalStackEnabled)
+                ButtonSegment(value: value, icon: Icon(_layoutIcon(value)), label: Text(value.label)),
           ],
         );
       });
@@ -812,7 +825,13 @@ class _MultiviewPageState extends State<MultiviewPage> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
       child: Row(
         children: [
-          Expanded(child: Center(child: buildLayoutSelector())),
+          // 段数由枚举派生、并随平台增减（纵向堆叠仅 Windows 出现），缩放兜底
+          // 使布局选择器在中等宽度下不溢出；空间足够时 scaleDown 不生效。
+          Expanded(
+            child: Center(
+              child: FittedBox(fit: BoxFit.scaleDown, child: buildLayoutSelector()),
+            ),
+          ),
           const SizedBox(width: 8),
           buildActions(),
         ],
@@ -844,33 +863,78 @@ class _MultiviewPageState extends State<MultiviewPage> {
       final cells = controller.cells;
       // 在 Obx 内读取以建立订阅：晋升、声音来源与弹幕开关变化即时驱动重绘。
       final focused = controller.focusedCellIndex.value;
-      final content = layout == MultiviewLayout.focus
-          ? _buildFocusLayout(cells, focused: focused, isWide: isWide)
-          : Column(
-              children: [
-                for (var row = 0; row < layout.rows; row++)
-                  Expanded(
-                    child: Row(
-                      children: [
-                        for (var col = 0; col < layout.columns; col++)
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.all(3),
-                              child: _buildCellAt(
-                                cells,
-                                row * layout.columns + col,
-                                isWide: isWide,
-                                showDanmaku: controller.shouldRenderDanmaku(row * layout.columns + col),
-                              ),
-                            ),
+      final content = switch (layout) {
+        MultiviewLayout.focus => _buildFocusLayout(cells, focused: focused, isWide: isWide),
+        MultiviewLayout.verticalStack => _buildVerticalStackLayout(cells, isWide: isWide),
+        // 固定容量布局：格数恒等于 rows × columns（由 setLayout 保证），
+        // 行列双向均分即完整覆盖。
+        _ => Column(
+          children: [
+            for (var row = 0; row < layout.rows; row++)
+              Expanded(
+                child: Row(
+                  children: [
+                    for (var col = 0; col < layout.columns; col++)
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(3),
+                          child: _buildCellAt(
+                            cells,
+                            row * layout.columns + col,
+                            isWide: isWide,
+                            showDanmaku: controller.shouldRenderDanmaku(row * layout.columns + col),
                           ),
-                      ],
-                    ),
-                  ),
-              ],
-            );
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      };
       return Padding(padding: const EdgeInsets.all(6), child: content);
     });
+  }
+
+  /// 纵向堆叠布局：单列 N 行（两格即 2×1，追加后为 3×1、4×1…）。
+  ///
+  /// 与一大多小的小列同构——固定行高 + 常驻子项 + 尾部「添加画面」槽，
+  /// 因此同样保住了 GlobalKey 搬移的零重建特性。行高按首屏格数固定，
+  /// 不随实际格数变化（否则每加一格都会让既有格畸形）。
+  Widget _buildVerticalStackLayout(List<MultiviewCellState> cells, {required bool isWide}) {
+    final canAdd = controller.canAddCell;
+    return LayoutBuilder(
+      builder: (context, boxConstraints) {
+        final extent = boxConstraints.maxHeight / _verticalStackViewportCells;
+        return SingleChildScrollView(
+          child: Column(
+            children: [
+              for (var index = 0; index < cells.length; index++)
+                SizedBox(
+                  height: extent,
+                  child: Padding(
+                    padding: const EdgeInsets.all(3),
+                    child: _buildCellAt(
+                      cells,
+                      index,
+                      isWide: isWide,
+                      showDanmaku: controller.shouldRenderDanmaku(index),
+                    ),
+                  ),
+                ),
+              if (canAdd)
+                SizedBox(
+                  height: extent,
+                  child: Padding(
+                    padding: const EdgeInsets.all(3),
+                    child: _AddCellSlot(onTap: () => unawaited(controller.addCell())),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// 一大多小布局：左侧大格（当前聚焦格）+ 右侧可滚动小列。

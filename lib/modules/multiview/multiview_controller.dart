@@ -58,6 +58,7 @@ class MultiviewController extends GetxController {
     MultiviewRoomVolumeSaver? roomVolumeSaver,
     int? maxCellCount,
     bool? perCellMode,
+    bool? verticalStackEnabled,
   }) : _playerFactory = playerFactory ?? _defaultPlayerFactory,
        _siteFor = siteFor ?? Sites.of,
        _pauseGlobalPlayback = pauseGlobalPlayback ?? _defaultPauseGlobalPlayback,
@@ -65,7 +66,8 @@ class MultiviewController extends GetxController {
        _roomVolumeLoader = roomVolumeLoader ?? _defaultRoomVolumeLoader,
        _roomVolumeSaver = roomVolumeSaver ?? _defaultRoomVolumeSaver,
        maxCellCount = maxCellCount ?? (PlatformUtils.isDesktop ? maxCells : MultiviewLayout.focus.capacity),
-       perCellMode = perCellMode ?? PlatformUtils.isWindows {
+       perCellMode = perCellMode ?? PlatformUtils.isWindows,
+       verticalStackEnabled = verticalStackEnabled ?? PlatformUtils.isWindows {
     if (this.maxCellCount < MultiviewLayout.focus.capacity || this.maxCellCount > maxCells) {
       throw ArgumentError.value(this.maxCellCount, 'maxCellCount', 'must be between 4 and $maxCells');
     }
@@ -92,6 +94,14 @@ class MultiviewController extends GetxController {
   /// - 弹幕：true 时每格各自持有会话与渲染入口；false 时只有所选格连接。
   /// - 页面交互：true 时点按格子呼出该格控制条，false 时维持晋升/切焦点。
   final bool perCellMode;
+
+  /// 纵向堆叠布局（上下排列，可增格）是否在当前平台提供入口。
+  ///
+  /// 默认按 [PlatformUtils.isWindows] 派生，与 [perCellMode] 同源但语义
+  /// 独立：前者是"逐格独立播放"的交互模型，后者是"平台是否提供该布局"。
+  /// 仅门控 UI 入口；预设恢复等数据路径不受影响，避免出现"预设指向了
+  /// 一个没有入口的布局"这种死局。测试显式注入即可覆盖两侧行为。
+  final bool verticalStackEnabled;
 
   /// 生产环境每格播放器工厂。
   static MultiviewCellPlayerHandle _defaultPlayerFactory({required int renderWidth, required int renderHeight}) {
@@ -398,8 +408,8 @@ class MultiviewController extends GetxController {
   /// UI-only reactive source for selected-cell controls.
   RxInt get audioFocusIndexState => _audioFocusIndex;
 
-  /// focus 布局下是否还能追加小格。
-  bool get canAddCell => layout.value == MultiviewLayout.focus && cells.length < maxCellCount;
+  /// 尾部是否还能追加画面格（[MultiviewLayout.growable] 布局且未达上限）。
+  bool get canAddCell => layout.value.growable && cells.length < maxCellCount;
 
   @override
   void onInit() {
@@ -603,12 +613,13 @@ class MultiviewController extends GetxController {
     _barrageControllers.add(BarrageController());
   }
 
-  /// focus 布局下追加一个空白小格（动态容量，滚动呈现由 UI 层负责）。
+  /// 尾部追加一个空白格（动态容量，滚动呈现由 UI 层负责）。
   ///
-  /// 仅 focus 布局且未达 [maxCellCount] 时有效；否则 Fail Fast。
+  /// 仅 [MultiviewLayout.growable] 布局（一大多小、纵向堆叠）且未达
+  /// [maxCellCount] 时有效；否则 Fail Fast。
   Future<void> addCell() async {
-    if (layout.value != MultiviewLayout.focus) {
-      throw StateError('multiview: addCell is only available in focus layout');
+    if (!layout.value.growable) {
+      throw StateError('multiview: addCell is only available in growable layouts (focus/verticalStack)');
     }
     if (!canAddCell) {
       throw StateError('multiview: cell limit reached ($maxCellCount)');
@@ -724,7 +735,7 @@ class MultiviewController extends GetxController {
     }
     if (_isStale(cellIndex, epoch)) return;
 
-    final target = _resolveRenderTarget(layout.value);
+    final target = _resolveRenderTarget(layout.value, cellCount: cells.length);
     final handle = _playerFactory(renderWidth: target.width.toInt(), renderHeight: target.height.toInt());
     // Publish ownership before async start so remove/close can retire a relay
     // whose factory or native initialization is still pending.
@@ -1364,12 +1375,17 @@ class MultiviewController extends GetxController {
   }
 
   /// 按当前布局把屏幕物理像素均分，得到播放器创建时的初始渲染分辨率。
-  Size _resolveRenderTarget(MultiviewLayout l) {
+  ///
+  /// [cellCount] 为当前实际格数。仅纵向堆叠布局会用到：它的行数等于格数
+  /// （2 格即 2×1、3 格即 3×1…），按固定行数均分会申请远超实际需要的
+  /// 渲染目标。其余布局的均分数学与 [cellCount] 无关，行为不变。
+  Size _resolveRenderTarget(MultiviewLayout l, {required int cellCount}) {
     final screen = _probeScreenMetrics();
+    final rows = l == MultiviewLayout.verticalStack ? cellCount.clamp(1, maxCellCount) : l.rows;
     // ponytail: 无窗口树（纯 Dart 测试/极早期调用）退回 720p 基线，
     // 保证分辨率计算可确定性验证。
     final width = ((screen.logical.width * screen.dpr) / l.columns).round().clamp(320, 3840);
-    final height = ((screen.logical.height * screen.dpr) / l.rows).round().clamp(180, 2160);
+    final height = ((screen.logical.height * screen.dpr) / rows).round().clamp(180, 2160);
     return Size(width.toDouble(), height.toDouble());
   }
 

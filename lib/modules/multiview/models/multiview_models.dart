@@ -11,12 +11,23 @@ import 'package:pure_live/model/live_play_quality.dart';
 /// 作为该格 media_kit 渲染输出（VideoControllerConfiguration.width/height）
 /// 的初始分辨率依据。注意行列划分只服务于初始渲染分辨率计算，
 /// focus 布局的视觉排布（左大右小列）由 UI 层决定。
+///
+/// [rows]/[columns] 描述的是**初始形态**；仅 [growable] 布局允许实际格数
+/// 超出 [capacity]（见 MultiviewController 的 setLayout(cellCount:) 与
+/// addCell），此时初始分辨率的行数由实际格数推导，不再取 [rows]。
 enum MultiviewLayout {
   /// 单画面（1 行 x 1 列）。
   single,
 
   /// 双画面（1 行 x 2 列，左右并排）。
   dual,
+
+  /// 双画面（2 行 x 1 列，上下排列），可向下追加更多格。
+  ///
+  /// 纵向堆叠是唯一按方向延伸的布局：默认两格即 2×1，经 addCell 追加以
+  /// 后即 3×1、4×1……上限由 MultiviewController.maxCellCount 兜底。
+  /// 首屏固定两格铺满，超出部分向下滚动。
+  verticalStack,
 
   /// 四画面（2 行 x 2 列）。
   quad,
@@ -27,26 +38,46 @@ enum MultiviewLayout {
   /// 挂载后会按大格/小格的实际物理 viewport 重设输出，晋升时同步交换。
   focus;
 
-  /// 当前布局可容纳的格子数量。
+  /// 当前布局可容纳的格子数量（初始形态；[growable] 布局可超过此值）。
   int get capacity => switch (this) {
     MultiviewLayout.single => 1,
-    MultiviewLayout.dual => 2,
+    MultiviewLayout.dual || MultiviewLayout.verticalStack => 2,
     MultiviewLayout.quad || MultiviewLayout.focus => 4,
   };
 
   /// 当前列数（渲染分辨率按列均分宽度）。
   int get columns => switch (this) {
-    MultiviewLayout.single => 1,
+    MultiviewLayout.single || MultiviewLayout.verticalStack => 1,
     MultiviewLayout.dual => 2,
     MultiviewLayout.quad || MultiviewLayout.focus => 2,
   };
 
-  /// 当前行数（渲染分辨率按行均分高度）。
+  /// 初始形态的行数（渲染分辨率按行均分高度）。
+  ///
+  /// [MultiviewLayout.verticalStack] 的实际行数等于格数，由控制器按
+  /// cellCount 推导；此处返回其初始形态的两格。
   int get rows => switch (this) {
-    MultiviewLayout.single => 1,
-    MultiviewLayout.dual => 1,
-    MultiviewLayout.quad || MultiviewLayout.focus => 2,
+    MultiviewLayout.single || MultiviewLayout.dual => 1,
+    MultiviewLayout.verticalStack || MultiviewLayout.quad || MultiviewLayout.focus => 2,
   };
+
+  /// 界面与预设副标题共用的网格记号（行×列）。
+  ///
+  /// 收敛为单一来源：布局选择器与预设条目都读它，新增布局不会再出现
+  /// 「只改了一处标签」的漏改。可增格布局在满格状态下仍显示初始记号。
+  String get label => switch (this) {
+    MultiviewLayout.single => '1×1',
+    MultiviewLayout.dual => '1×2',
+    MultiviewLayout.verticalStack => '2×1',
+    MultiviewLayout.quad => '2×2',
+    MultiviewLayout.focus => '1+3',
+  };
+
+  /// 是否允许在尾部追加画面格（动态容量）。
+  ///
+  /// 这两个布局的格数由用户按需增减，控制器据此放开
+  /// canAddCell/addCell，UI 据此决定是否渲染「添加画面」槽。
+  bool get growable => this == MultiviewLayout.focus || this == MultiviewLayout.verticalStack;
 }
 
 /// 单格生命周期状态。

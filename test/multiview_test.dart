@@ -179,8 +179,10 @@ class _FakeDanmaku extends LiveDanmaku {
 ///
 /// [perCellMode] 缺省为 false，保持历史「音频焦点互斥 + 单弹幕会话」行为，
 /// 使既有断言无需改动；逐格模式（生产环境仅 Windows 启用）单列一组用例覆盖。
+/// [verticalStackEnabled] 同样缺省 false（非 Windows 语义），它只门控 UI
+/// 入口，控制器逻辑不读，需要覆盖两侧时显式注入。
 class _Harness {
-  _Harness({int? maxCellCount, bool perCellMode = false}) {
+  _Harness({int? maxCellCount, bool perCellMode = false, bool verticalStackEnabled = false}) {
     controller = MultiviewController(
       playerFactory: _factory,
       streamResolver: _resolver,
@@ -192,6 +194,7 @@ class _Harness {
       },
       maxCellCount: maxCellCount,
       perCellMode: perCellMode,
+      verticalStackEnabled: verticalStackEnabled,
     );
   }
 
@@ -633,6 +636,82 @@ void main() {
       await controller.assignRoom(1, _room('r2'));
       // dual（1 行 x 2 列）：640x720。
       expect(harness.requestedSizes.last, (640, 720));
+    });
+
+    test('verticalStack 是单列可增格布局，标签与其他布局不重名', () {
+      expect(MultiviewLayout.verticalStack.capacity, 2);
+      expect(MultiviewLayout.verticalStack.columns, 1);
+      expect(MultiviewLayout.verticalStack.rows, 2);
+      expect(MultiviewLayout.verticalStack.label, '2×1');
+      expect(MultiviewLayout.verticalStack.growable, isTrue);
+
+      // 标签是选择器与预设副标题的单一来源：两个布局共用同一记号即歧义。
+      final labels = MultiviewLayout.values.map((layout) => layout.label).toList();
+      expect(labels.toSet(), hasLength(MultiviewLayout.values.length));
+      expect(MultiviewLayout.dual.label, '1×2');
+      // 可增格集合：只有这两个布局允许尾部追加。
+      expect(MultiviewLayout.values.where((layout) => layout.growable).toSet(), {
+        MultiviewLayout.focus,
+        MultiviewLayout.verticalStack,
+      });
+    });
+
+    test('setLayout 到 verticalStack 保留前两格并释放多余格', () async {
+      final harness = _Harness();
+      final controller = harness.controller;
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(1, _room('r2'));
+      await controller.assignRoom(2, _room('r3'));
+      harness.log.clear();
+
+      await controller.setLayout(MultiviewLayout.verticalStack);
+
+      expect(controller.layout.value, MultiviewLayout.verticalStack);
+      expect(controller.cells, hasLength(MultiviewLayout.verticalStack.capacity));
+      expect(controller.cells[0].room?.roomId, 'r1');
+      expect(controller.cells[1].room?.roomId, 'r2');
+      // 只有被裁掉的第三格走释放路径，保留格不重建。
+      await harness.pump();
+      expect(harness.log.where((e) => e == 'p2:pDispose'), hasLength(1));
+      expect(harness.log.where((e) => e == 'p0:pDispose'), isEmpty);
+      expect(harness.log.where((e) => e == 'p1:pDispose'), isEmpty);
+    });
+
+    test('verticalStack 的渲染分辨率按实际格数均分高度', () async {
+      final harness = _Harness();
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.verticalStack);
+
+      // 基线 1280x720：2×1 不切宽度、高度两等分。
+      await controller.assignRoom(0, _room('r1'));
+      expect(harness.requestedSizes.last, (1280, 360));
+
+      // 追加到三格后新建的播放器按三等分高度，而非沿用固定两格数学。
+      await controller.addCell();
+      await controller.assignRoom(2, _room('r3'));
+      expect(harness.requestedSizes.last, (1280, 240));
+    });
+
+    test('addCell 在可增格布局生效并在 maxCellCount 处拒绝，固定容量布局直接拒绝', () async {
+      final harness = _Harness(maxCellCount: 4);
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.verticalStack);
+      expect(controller.cells, hasLength(2));
+
+      await controller.addCell();
+      expect(controller.cells, hasLength(3));
+      expect(controller.cells[2].status, MultiviewCellStatus.empty);
+      expect(controller.canAddCell, isTrue);
+
+      await controller.addCell();
+      expect(controller.cells, hasLength(4));
+      expect(controller.canAddCell, isFalse);
+      await expectLater(controller.addCell(), throwsStateError);
+
+      // 固定容量布局没有可追加的尾巴。
+      await controller.setLayout(MultiviewLayout.quad);
+      expect(controller.canAddCell, isFalse);
+      await expectLater(controller.addCell(), throwsStateError);
     });
 
     test('setAudioFocus 切换后新旧格静音状态互斥', () async {
@@ -1565,6 +1644,35 @@ void main() {
       expect(controller.layout.value, MultiviewLayout.focus);
       expect(controller.cells, hasLength(MultiviewLayout.focus.capacity));
       expect(controller.cells[0].room!.roomId, 'r0');
+    });
+
+    test('verticalStack 的格数与形态经预设往返后完整还原', () async {
+      final harness = _Harness(perCellMode: true, verticalStackEnabled: true, maxCellCount: 5);
+      final controller = harness.controller;
+      await controller.setLayout(MultiviewLayout.verticalStack);
+      await controller.addCell();
+      await controller.assignRoom(0, _room('r1'));
+      await controller.assignRoom(2, _room('r3'));
+      await harness.pump();
+
+      final preset = controller.createPreset('三格竖排');
+      expect(preset.layout, MultiviewLayout.verticalStack);
+      expect(preset.cellCount, 3);
+      // 空位保留位次：第 2 格未分配，不得被压缩掉。
+      expect(preset.cells[1], isNull);
+
+      final restored = MultiviewPreset.fromJson(jsonDecode(jsonEncode(preset.toJson())))!;
+      expect(restored.layout, MultiviewLayout.verticalStack);
+
+      await controller.setLayout(MultiviewLayout.quad);
+      await controller.applyPreset(restored);
+      await harness.pump();
+
+      expect(controller.layout.value, MultiviewLayout.verticalStack);
+      expect(controller.cells, hasLength(3));
+      expect(controller.cells[0].room?.roomId, 'r1');
+      expect(controller.cells[1].room, isNull);
+      expect(controller.cells[2].room?.roomId, 'r3');
     });
 
     test('MultiviewPreset JSON 往返保持内容与空位次', () {
