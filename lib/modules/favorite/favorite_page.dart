@@ -1,5 +1,6 @@
 import 'package:remixicon/remixicon.dart';
 import 'package:pure_live/common/index.dart';
+import 'package:pure_live/common/global/platform_utils.dart';
 import 'package:pure_live/modules/tags/live_tag.dart';
 import 'package:pure_live/modules/favorite/room_grid_view.dart';
 import 'package:pure_live/common/widgets/common_appbar_actions.dart';
@@ -21,7 +22,14 @@ class FavoritePage extends GetView<FavoriteController> {
             appBar: AppBar(
               centerTitle: true,
               leading: showAction ? const MenuButton() : null,
-              actions: showAction ? [CommonAppBarActions()] : null,
+              actions: [
+                // Windows-only, and deliberately not gated on `showAction`:
+                // the wide layout reaches Settings through the navigation rail
+                // instead of the app bar, but this toggle is meant to be a
+                // one-tap shortcut in either layout.
+                if (PlatformUtils.isWindows) const OpenInNewWindowToggle(),
+                if (showAction) const CommonAppBarActions(),
+              ],
               title: TabBar(
                 key: const ValueKey('favorite-status-tabs'),
                 controller: controller.tabController,
@@ -293,6 +301,38 @@ class _FavoriteEmptyState extends StatelessWidget {
         subtitle: subtitle,
         buttonText: canShowOffline ? i18n('favorite_show_offline') : i18n('retry'),
         onButtonPressed: canShowOffline ? () => controller.animateToStatusIndex(2) : controller.refreshData,
+      );
+    });
+  }
+}
+
+/// One-tap shortcut for the Windows setting that makes every live-room entry
+/// (favourites, home, categories, search, history, ...) open the room in its
+/// own window.
+///
+/// It writes to the same [SettingsService] value the Settings page and the
+/// navigation gate read, so the three can never disagree. `hiveBool` persists
+/// on every value change, so no explicit save is needed here.
+class OpenInNewWindowToggle extends StatelessWidget {
+  const OpenInNewWindowToggle({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Obx(() {
+      final enabled = SettingsService.to.app.openRoomInNewWindow.v;
+      // The filled/tinted variant only while the setting is on, so the app bar
+      // shows the current state at a glance instead of needing a label.
+      return IconButton(
+        tooltip: i18n('open_room_in_new_window_default'),
+        onPressed: () {
+          SettingsService.to.app.openRoomInNewWindow.v = !enabled;
+        },
+        icon: const Icon(Icons.open_in_new_rounded, size: 20),
+        style: IconButton.styleFrom(
+          foregroundColor: enabled ? colorScheme.onPrimaryContainer : colorScheme.onSurfaceVariant,
+          backgroundColor: enabled ? colorScheme.primaryContainer : null,
+        ),
       );
     });
   }
