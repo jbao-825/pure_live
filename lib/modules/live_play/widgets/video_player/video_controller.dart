@@ -138,7 +138,13 @@ class DanmakuManager {
     final context = Get.context;
     if (context == null) return;
     controller.pause();
-    unawaited(DanmakuMessageActions.show(context, message).whenComplete(controller.resume));
+    unawaited(
+      DanmakuMessageActions.show(
+        context,
+        message,
+        platform: videoController.livePlayController.site,
+      ).whenComplete(controller.resume),
+    );
   }
 
   void _scheduleConfigUpdate() {
@@ -178,10 +184,16 @@ class DanmakuManager {
     final originalColor = Color.fromARGB(255, msg.color.r, msg.color.g, msg.color.b);
     final localStyle = msg.isLocal ? msg.style : null;
     final settings = settingsService.danmaku;
+    // Only messages emitted after the remark exists can carry it: the barrage
+    // engine owns already-emitting items and never rewrites them.
+    final remark = msg.isLocal || !settings.showDanmakuUserRemark.v
+        ? ''
+        : settingsService.fav.userRemark(videoController.livePlayController.site, msg.userName);
+    final remarkPrefix = remark.isEmpty ? '' : '[$remark] ';
     if (settings.enableDanmakuDisplay.v && !videoController.hideDanmaku.value) {
       controller.send(
         BarrageItem(
-          content: msg.message,
+          content: '$remarkPrefix${msg.message}',
           type: switch (localStyle?.placement) {
             LiveMessagePlacement.top => BarrageType.topFixed,
             LiveMessagePlacement.bottom => BarrageType.bottomFixed,
@@ -221,7 +233,7 @@ class DanmakuManager {
           : Color(settings.pipDanmakuColor.v);
       pipController.send(
         BarrageItem(
-          content: msg.message,
+          content: '$remarkPrefix${msg.message}',
           type: switch (localStyle?.placement) {
             LiveMessagePlacement.top => BarrageType.topFixed,
             LiveMessagePlacement.bottom => BarrageType.bottomFixed,

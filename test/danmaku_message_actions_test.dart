@@ -67,6 +67,7 @@ void main() {
     settings = Get.put<SettingsService>(_Settings()) as _Settings;
     settings.fav.shieldList.clear();
     settings.fav.blockedDanmakuUsers.clear();
+    settings.fav.danmakuUserRemarks.value = <String, String>{};
     room = Get.put<LivePlayController>(_Room()) as _Room;
   });
   tearDown(() {
@@ -337,4 +338,91 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  for (final language in ['en', 'zh']) {
+    _case('$language quick remark saves, previews and deletes', (tester) async {
+      await open(tester, language: language);
+      const platform = 'bilibili';
+      final message = LiveMessage(
+        type: LiveMessageType.chat,
+        userName: '  Selected  ',
+        message: 'hello',
+        color: LiveMessageColor.white,
+      );
+      String previewOf(String remark) =>
+          (labels['danmaku_remark_current'] as String).replaceAll('{remark}', remark);
+
+      // Saving trims the value and scopes it to the current platform only.
+      final pending = DanmakuMessageActions.show(host, message, platform: platform);
+      await tester.pumpAndSettle();
+      await tapLabel(tester, 'danmaku_quick_remark');
+      await tester.enterText(find.byType(TextField), '  老粉  ');
+      await tapLabel(tester, 'confirm');
+      await tester.pumpAndSettle();
+      expect(settings.fav.userRemark(platform, 'selected'), '老粉');
+      expect(settings.fav.userRemark('douyu', 'Selected'), isEmpty);
+      expect(find.text(previewOf('老粉')), findsOneWidget);
+
+      // Reopening prefills the editor; cancelling leaves the stored value alone.
+      await tapLabel(tester, 'danmaku_quick_remark');
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, '老粉');
+      await tapLabel(tester, 'cancel');
+      await tester.pumpAndSettle();
+      expect(settings.fav.userRemark(platform, 'selected'), '老粉');
+
+      // A blank confirmation deletes the remark and clears the preview line.
+      await tapLabel(tester, 'danmaku_quick_remark');
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '   ');
+      await tapLabel(tester, 'confirm');
+      await tester.pumpAndSettle();
+      expect(settings.fav.userRemark(platform, 'selected'), isEmpty);
+      expect(find.text(previewOf('老粉')), findsNothing);
+
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+      await pending;
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  _case('a locally composed message offers no remark entry', (tester) async {
+    await open(tester);
+    final pending = DanmakuMessageActions.show(
+      host,
+      LiveMessage(
+        type: LiveMessageType.chat,
+        userName: 'local-me',
+        message: 'hello',
+        color: LiveMessageColor.white,
+        isLocal: true,
+      ),
+      platform: 'bilibili',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(labels['danmaku_quick_remark'] as String), findsNothing);
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    await pending;
+    expect(tester.takeException(), isNull);
+  });
+
+  test('remark storage trims, keys by platform and drops blank entries', () {
+    final favorite = settings.fav;
+
+    expect(favorite.setUserRemark('bilibili', '  Alice  ', '  老粉  '), isTrue);
+    expect(favorite.userRemark('bilibili', ' alice '), '老粉');
+    expect(favorite.userRemark('douyu', 'Alice'), isEmpty);
+    // An identical edit reports no change instead of rewriting equal state.
+    expect(favorite.setUserRemark('bilibili', 'Alice', '老粉'), isFalse);
+    expect(favorite.setUserRemark('bilibili', 'ALICE', ''), isTrue);
+    expect(favorite.danmakuUserRemarks.value, isEmpty);
+    // Deleting a remark that is not stored is not a change either.
+    expect(favorite.setUserRemark('bilibili', 'Alice', ''), isFalse);
+    // An anonymous sender cannot be labelled.
+    expect(favorite.setUserRemark('bilibili', '   ', 'x'), isFalse);
+
+    expect(FavoriteRoomController.parseUserRemarks({' a ': ' b ', '': 'x', 'c': '   ', 7: 'd'}), {'a': 'b'});
+  });
 }

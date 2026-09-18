@@ -9,6 +9,17 @@ class FavoriteRoomController extends GetxController {
 
   final RxList<String> blockedDanmakuUsers = hiveStringList('blockedDanmakuUsers', <String>[]);
 
+  /// Private labels the user attaches to danmaku senders in the long-press
+  /// action sheet. Keyed by `platform:lowercased-name`, so a display name that
+  /// exists on two platforms stays two different people. Nothing here is ever
+  /// sent to the platform or the room.
+  final Rx<Map<String, String>> danmakuUserRemarks = hiveObject<Map<String, String>>(
+    'danmakuUserRemarks',
+    <String, String>{},
+    fromJson: (json) => parseUserRemarks(json),
+    toJson: (remarks) => remarks,
+  );
+
   final RxList<String> hotAreasList = hiveStringList('hotAreasList', AppConsts.supportSites);
 
   final RxInt siteCatalogMigration = hiveInt('siteCatalogMigration', 0);
@@ -41,6 +52,7 @@ class FavoriteRoomController extends GetxController {
   void onInit() {
     super.onInit();
     _normalizeDanmakuBlocks();
+    _normalizeUserRemarks();
     _normalizeSiteCatalogIds();
     _normalizeFavoriteRoomIdentities();
     _migrateSiteCatalog();
@@ -367,6 +379,38 @@ class FavoriteRoomController extends GetxController {
     blockedDanmakuUsers.assignAll(updated);
   }
 
+  /// Lookup key for one sender's private remark. Matches the case-insensitive,
+  /// trimmed comparison the danmaku block list already uses.
+  static String userRemarkKey(String platform, String userName) =>
+      '${platform.trim().toLowerCase()}:${userName.trim().toLowerCase()}';
+
+  String userRemark(String platform, String userName) =>
+      danmakuUserRemarks.value[userRemarkKey(platform, userName)] ?? '';
+
+  /// Stores [remark] for one sender; a blank [remark] deletes the entry.
+  /// Returns whether anything actually changed.
+  bool setUserRemark(String platform, String userName, String remark) {
+    if (userName.trim().isEmpty) return false;
+
+    final key = userRemarkKey(platform, userName);
+    final text = remark.trim();
+    final current = danmakuUserRemarks.value;
+
+    if (text.isEmpty) {
+      if (!current.containsKey(key)) return false;
+      final updated = Map<String, String>.from(current);
+      updated.remove(key);
+      danmakuUserRemarks.value = updated;
+      return true;
+    }
+
+    if (current[key] == text) return false;
+    final updated = Map<String, String>.from(current);
+    updated[key] = text;
+    danmakuUserRemarks.value = updated;
+    return true;
+  }
+
   LiveRoom? getRoomById(String roomId, String platform) {
     final identity = '${platform.trim().toLowerCase()}:${roomId.trim()}';
 
@@ -391,6 +435,7 @@ class FavoriteRoomController extends GetxController {
     return {
       'shieldList': List<String>.from(shieldList),
       'blockedDanmakuUsers': List<String>.from(blockedDanmakuUsers),
+      'danmakuUserRemarks': Map<String, String>.from(danmakuUserRemarks.value),
       'hotAreasList': List<String>.from(hotAreasList),
       'preferPlatform': preferPlatform.v,
       'favoriteRooms': favoriteRooms.v.map((e) => e.toJson()).toList(),
@@ -404,6 +449,7 @@ class FavoriteRoomController extends GetxController {
       'blockedDanmakuUsers': _normalizeDanmakuBlockValues(
         List<String>.from(json['blockedDanmakuUsers'] ?? const <String>[]),
       ),
+      'danmakuUserRemarks': _readUserRemarks(json['danmakuUserRemarks']),
       'hotAreasList': List<String>.from(json['hotAreasList'] ?? AppConsts.supportSites),
       'preferPlatform': json['preferPlatform']?.toString().trim().toLowerCase() ?? Sites.bilibiliSite,
       'favoriteRooms': BackupMigrationUtil.parseObjectList(json['favoriteRooms'], LiveRoom.fromJson, strict: true),
@@ -415,6 +461,7 @@ class FavoriteRoomController extends GetxController {
     final parsed = parseConfig(json);
     shieldList.assignAll(parsed['shieldList']);
     blockedDanmakuUsers.assignAll(parsed['blockedDanmakuUsers']);
+    danmakuUserRemarks.value = parsed['danmakuUserRemarks'];
     hotAreasList.assignAll(parsed['hotAreasList']);
     preferPlatform.v = parsed['preferPlatform'];
     favoriteRooms.v = parsed['favoriteRooms'];
@@ -431,6 +478,7 @@ class FavoriteRoomController extends GetxController {
       'blockedDanmakuUsers': _normalizeDanmakuBlockValues(
         List<String>.from(favorite['blockedDanmakuUsers'] ?? const <String>[]),
       ),
+      'danmakuUserRemarks': _readUserRemarks(favorite['danmakuUserRemarks']),
       'hotAreasList': List<String>.from(favorite['hotAreasList'] ?? AppConsts.supportSites),
       'preferPlatform': favorite['preferPlatform'] ?? Sites.bilibiliSite,
       'favoriteRooms': BackupMigrationUtil.parseObjectList(
@@ -480,6 +528,32 @@ class FavoriteRoomController extends GetxController {
       if (value.isNotEmpty && seen.add(value.toLowerCase())) normalized.add(value);
     }
     return normalized;
+  }
+
+  /// Normalizes a remarks map coming either from disk or from an untrusted
+  /// backup blob. Blank keys/values are dropped so a malformed import cannot
+  /// persist a ghost remark that no edit could ever clear.
+  static Map<String, String> parseUserRemarks(Map<dynamic, dynamic> raw) {
+    final result = <String, String>{};
+    raw.forEach((dynamic key, dynamic value) {
+      if (key is! String) return;
+      final trimmedKey = key.trim();
+      final text = value?.toString().trim() ?? '';
+      if (trimmedKey.isEmpty || text.isEmpty) return;
+      result[trimmedKey] = text;
+    });
+    return result;
+  }
+
+  static Map<String, String> _readUserRemarks(dynamic raw) =>
+      raw is Map ? parseUserRemarks(raw) : <String, String>{};
+
+  void _normalizeUserRemarks() {
+    final current = danmakuUserRemarks.value;
+    final normalized = parseUserRemarks(current);
+    final unchanged =
+        normalized.length == current.length && normalized.entries.every((entry) => current[entry.key] == entry.value);
+    if (!unchanged) danmakuUserRemarks.value = normalized;
   }
 
   static Map<String, dynamic> mergeConfig(Map<String, dynamic> rootConfig, Map<String, dynamic> updateFields) {

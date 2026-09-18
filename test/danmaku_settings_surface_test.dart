@@ -16,6 +16,7 @@ import 'package:pure_live/modules/live_play/pages/danmaku_settings_page.dart';
 import 'package:pure_live/common/services/settings/font_settings_controller.dart';
 import 'package:pure_live/common/services/settings/danmaku_settings_controller.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_viewing_preset.dart';
+import 'package:pure_live/modules/live_play/widgets/local_interaction/local_interaction_controller.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_settings_binding.dart';
 import 'package:pure_live/modules/live_play/widgets/video_player/video_controller_panel.dart';
 
@@ -36,6 +37,9 @@ void main() {
     Get.reset();
     await HivePrefUtil.clear();
     Get.put<SettingsService>(_TestSettingsService(DanmakuSettingsController()));
+    // The settings surface reads the local-danmaku controller, which production
+    // registers in initial_services.
+    Get.put(LocalInteractionController());
   });
 
   tearDown(Get.reset);
@@ -374,6 +378,7 @@ class _TestAssetLoader extends AssetLoader {
     'collapse_repeated_danmaku_desc': 'Hide the same audience text inside the time window',
     'repeated_danmaku_window': 'Merge window',
     'danmaku_no_emoji': 'Pure text',
+    'danmaku_show_user_remark': 'Show user remarks',
     'margin_top': 'Top margin',
     'margin_bottom': 'Bottom margin',
     'opacity': 'Opacity',

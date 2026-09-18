@@ -34,6 +34,9 @@ class DanmakuSettingsController extends GetxController {
   // fuzzy suppression. Enabling this by default can hide a large share of
   // short messages in busy rooms even though the transport received them.
   static const bool defaultEnableDanmakuSimilarityFilter = false;
+  /// Private user remarks are a local recognition aid, so they are visible
+  /// until the user explicitly hides them.
+  static const bool defaultShowDanmakuUserRemark = true;
 
   static int normalizeFontWeight(Object? value, {int fallback = 500}) {
     final raw = value is num ? value.toInt() : fallback;
@@ -68,6 +71,7 @@ class DanmakuSettingsController extends GetxController {
   final RxBool danmakuAutoFps = hiveBool('danmakuAutoFps', defaultDanmakuAutoFps);
   final RxBool enableDanmakuTapInteraction = hiveBool('enableDanmakuTapInteraction', true);
   final RxBool enableDanmakuLongPressInteraction = hiveBool('enableDanmakuLongPressInteraction', true);
+  final RxBool showDanmakuUserRemark = hiveBool('showDanmakuUserRemark', defaultShowDanmakuUserRemark);
   final RxBool collapseRepeatedDanmaku = hiveBool('collapseRepeatedDanmaku', false);
   final RxInt repeatedDanmakuWindowSeconds = hiveInt('repeatedDanmakuWindowSeconds', 5);
   final RxInt danmakuInteractionMigration = hiveInt('danmakuInteractionMigration', 0);
@@ -195,6 +199,7 @@ class DanmakuSettingsController extends GetxController {
       'danmakuAutoFps': danmakuAutoFps.v,
       'enableDanmakuTapInteraction': enableDanmakuTapInteraction.v,
       'enableDanmakuLongPressInteraction': enableDanmakuLongPressInteraction.v,
+      'showDanmakuUserRemark': showDanmakuUserRemark.v,
       'collapseRepeatedDanmaku': collapseRepeatedDanmaku.v,
       'repeatedDanmakuWindowSeconds': repeatedDanmakuWindowSeconds.v,
       'savedDanmakuTemplate': savedDanmakuTemplate.v,
@@ -253,6 +258,7 @@ class DanmakuSettingsController extends GetxController {
       'danmakuAutoFps': typed<bool>(json['danmakuAutoFps'] ?? defaultDanmakuAutoFps),
       'enableDanmakuTapInteraction': typed<bool>(json['enableDanmakuTapInteraction'] ?? true),
       'enableDanmakuLongPressInteraction': typed<bool>(json['enableDanmakuLongPressInteraction'] ?? true),
+      'showDanmakuUserRemark': typed<bool>(json['showDanmakuUserRemark'] ?? defaultShowDanmakuUserRemark),
       'collapseRepeatedDanmaku': typed<bool>(json['collapseRepeatedDanmaku'] ?? false),
       'repeatedDanmakuWindowSeconds': typed<int>(
         (json['repeatedDanmakuWindowSeconds'] ?? 5).toInt().clamp(1, 30).toInt(),
@@ -325,6 +331,7 @@ class DanmakuSettingsController extends GetxController {
     danmakuAutoFps.v = parsed['danmakuAutoFps'];
     enableDanmakuTapInteraction.v = parsed['enableDanmakuTapInteraction'];
     enableDanmakuLongPressInteraction.v = parsed['enableDanmakuLongPressInteraction'];
+    showDanmakuUserRemark.v = parsed['showDanmakuUserRemark'];
     collapseRepeatedDanmaku.v = parsed['collapseRepeatedDanmaku'];
     repeatedDanmakuWindowSeconds.v = parsed['repeatedDanmakuWindowSeconds'];
     savedDanmakuTemplate.v = parsed['savedDanmakuTemplate'];
@@ -379,6 +386,7 @@ class DanmakuSettingsController extends GetxController {
       'danmakuAutoFps': danmaku['danmakuAutoFps'] ?? defaultDanmakuAutoFps,
       'enableDanmakuTapInteraction': danmaku['enableDanmakuTapInteraction'] ?? true,
       'enableDanmakuLongPressInteraction': danmaku['enableDanmakuLongPressInteraction'] ?? true,
+      'showDanmakuUserRemark': danmaku['showDanmakuUserRemark'] ?? defaultShowDanmakuUserRemark,
       'collapseRepeatedDanmaku': danmaku['collapseRepeatedDanmaku'] ?? false,
       'repeatedDanmakuWindowSeconds': (danmaku['repeatedDanmakuWindowSeconds'] ?? 5).toInt().clamp(1, 30).toInt(),
       'savedDanmakuTemplate': danmaku['savedDanmakuTemplate']?.toString() ?? '',

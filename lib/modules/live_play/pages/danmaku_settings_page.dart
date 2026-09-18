@@ -222,6 +222,13 @@ class _DanmakuSettingsContentState extends State<DanmakuSettingsContent> {
                 onChanged: (value) => controller.noEmojiMode.value = value,
                 labelColor: labelColor,
               ),
+              _switch(
+                theme,
+                title: i18n('danmaku_show_user_remark'),
+                value: SettingsService.to.danmaku.showDanmakuUserRemark.v,
+                onChanged: (value) => SettingsService.to.danmaku.showDanmakuUserRemark.v = value,
+                labelColor: labelColor,
+              ),
               _slider(
                 theme,
                 title: i18n("danmaku_area"),

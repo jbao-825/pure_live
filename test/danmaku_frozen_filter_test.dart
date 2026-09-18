@@ -6,6 +6,8 @@ import 'package:hive_ce/hive.dart';
 import 'package:pure_live/common/utils/hive_pref_util.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pure_live/common/index.dart';
+import 'package:pure_live/common/services/settings/danmaku_settings_controller.dart';
+import 'package:pure_live/common/services/settings/favorite_room_controller.dart';
 import 'package:pure_live/common/services/settings/font_settings_controller.dart';
 import 'package:pure_live/modules/live_play/controllers/live_play_controller.dart';
 import 'package:pure_live/modules/live_play/controllers/player_state.dart';
@@ -23,6 +25,9 @@ class _Room extends GetxController implements LivePlayController {
   final danmakuMessages = <LiveMessage>[].obs;
   @override
   final danmakuPresentationRevision = 0.obs;
+  // Rows scope private remarks by platform, so the list reads the room's site.
+  @override
+  final String site = 'bilibili';
   @override
   final localInteractionController = _Local();
   final removals = StreamController<bool Function(LiveMessage)>.broadcast(sync: true);
@@ -35,6 +40,12 @@ class _Room extends GetxController implements LivePlayController {
 class _Settings extends SettingsService {
   @override
   final font = FontSettingsController();
+  // Every rendered row reads the remark map and the block list, so both
+  // controllers must resolve without the real service bootstrap.
+  @override
+  final fav = FavoriteRoomController();
+  @override
+  final danmaku = DanmakuSettingsController();
   @override
   // This isolated list does not initialize playback/network services.
   // ignore: must_call_super

@@ -277,7 +277,7 @@ class DanmakuListViewState extends State<DanmakuListView> {
     while (_itemCache.length >= _itemCacheCapacity) {
       _itemCache.remove(_itemCache.keys.first);
     }
-    final item = DanmakuItem(key: ObjectKey(message), danmaku: message);
+    final item = DanmakuItem(key: ObjectKey(message), danmaku: message, platform: controller.site);
     _itemCache[message] = item;
     return item;
   }
@@ -445,14 +445,20 @@ class DanmakuListViewState extends State<DanmakuListView> {
 class DanmakuItem extends StatelessWidget {
   final LiveMessage danmaku;
 
-  const DanmakuItem({super.key, required this.danmaku});
+  /// Site id of the room this row belongs to. Private user remarks are keyed by
+  /// platform as well as name, so an identically named sender on another
+  /// platform must not inherit this row's label.
+  final String platform;
+
+  const DanmakuItem({super.key, required this.danmaku, required this.platform});
 
   Future<void> _copyMessage() async {
     await Clipboard.setData(ClipboardData(text: "${danmaku.userName}: ${danmaku.message}"));
     ToastUtil.show(i18n('copied_to_clipboard'));
   }
 
-  Future<void> _showActions(BuildContext context) => DanmakuMessageActions.show(context, danmaku);
+  Future<void> _showActions(BuildContext context) =>
+      DanmakuMessageActions.show(context, danmaku, platform: platform);
 
   @override
   Widget build(BuildContext context) {
@@ -498,24 +504,38 @@ class DanmakuItem extends StatelessWidget {
                     onSecondaryTap: () => _showActions(context),
                     onLongPress: () => _showActions(context),
                     onDoubleTap: _copyMessage,
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            text: "${danmaku.userName}: ",
-                            style: AppTextStyles.t14.copyWith(fontWeight: FontWeight.w700, color: textColor),
-                          ),
-                          TextSpan(
-                            children: parseEmojis(danmaku.message, AppTextStyles.t14.fontSize!, textColor),
-                            style: AppTextStyles.t14.copyWith(
-                              height: 1.45,
-                              fontWeight: FontWeight.w500,
-                              color: textColor,
+                    // The list hands back one cached DanmakuItem per message, so
+                    // a remark edited anywhere else never rebuilds this row.
+                    // Subscribing here is what makes a new remark appear at once.
+                    child: Obx(() {
+                      final settings = SettingsService.to;
+                      final remark = settings.danmaku.showDanmakuUserRemark.v
+                          ? settings.fav.userRemark(platform, danmaku.userName)
+                          : '';
+                      return Text.rich(
+                        TextSpan(
+                          children: [
+                            if (remark.isNotEmpty)
+                              TextSpan(
+                                text: '[$remark] ',
+                                style: AppTextStyles.t14.copyWith(fontWeight: FontWeight.w700, color: vibrantColor),
+                              ),
+                            TextSpan(
+                              text: "${danmaku.userName}: ",
+                              style: AppTextStyles.t14.copyWith(fontWeight: FontWeight.w700, color: textColor),
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
+                            TextSpan(
+                              children: parseEmojis(danmaku.message, AppTextStyles.t14.fontSize!, textColor),
+                              style: AppTextStyles.t14.copyWith(
+                                height: 1.45,
+                                fontWeight: FontWeight.w500,
+                                color: textColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
                   ),
                 ),
               ],
