@@ -46,6 +46,7 @@ import 'package:pure_live/recorder/pages/recorder/recorder_page.dart';
 import 'package:pure_live/modules/account/bilibili/qr_login_page.dart';
 import 'package:pure_live/modules/live_play/pages/live_play_page.dart';
 import 'package:pure_live/modules/account/bilibili/bilibili_bings.dart';
+import 'package:pure_live/modules/account/bilibili/bilibili_cookie_page.dart';
 import 'package:pure_live/modules/account/bilibili/web_login_page.dart';
 import 'package:pure_live/modules/account/soop/soop_cookie_binding.dart';
 import 'package:pure_live/modules/account/huya/huya_cookie_binding.dart';
@@ -120,6 +121,12 @@ class AppPages {
       name: RoutePath.kBiliBiliQRLogin,
       page: _smoothPage(() => const BiliBiliQRLoginPage()),
       bindings: [BilibiliQrLoginBinding()],
+    ),
+    //哔哩哔哩Cookie登录
+    GetPage(
+      name: RoutePath.kBiliBiliCookie,
+      page: _smoothPage(() => const BilibiliCookiePage()),
+      bindings: [BilibiliCookieBinding()],
     ),
     GetPage(
       name: RoutePath.kSettingsDanmuShield,

@@ -73,6 +73,8 @@ class RoutePath {
 
   static const kBiliBiliWebLogin = "/bilibili_web_login";
 
+  static const kBiliBiliCookie = "/bilibili_cookie";
+
   /// webview
   static const kWebview = "/webview_all";
 

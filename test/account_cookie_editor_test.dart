@@ -10,6 +10,7 @@ import 'package:pure_live/common/services/settings/font_settings_controller.dart
 import 'package:pure_live/common/services/settings_service.dart';
 import 'package:pure_live/common/utils/hive_pref_util.dart';
 import 'package:pure_live/get/get.dart';
+import 'package:pure_live/modules/account/bilibili/bilibili_cookie_controller.dart';
 import 'package:pure_live/modules/account/douyin/douyin_cookie_controller.dart';
 import 'package:pure_live/modules/account/huya/huya_cookie_controller.dart';
 import 'package:pure_live/modules/account/kuaishou/kuaishou_cookie_controller.dart';
@@ -65,12 +66,15 @@ void main() {
   });
 
   test('all platform cookie controllers persist the normalized header value', () {
+    cookies.bilibiliCookie.value = ' \r\nbilibili=stored\u0000 ';
     cookies.huyaCookie.value = ' \r\nhuya=stored\u0000 ';
     cookies.douyinCookie.value = ' \r\ndouyin=stored\u0000 ';
     cookies.onInit();
+    expect(cookies.bilibiliCookie.value, 'bilibili=stored');
     expect(cookies.huyaCookie.value, 'huya=stored');
     expect(cookies.douyinCookie.value, 'douyin=stored');
 
+    final bilibili = BilibiliCookieController();
     final douyin = DouyinCookieController();
     final huya = HuyaCookieController();
     final kuaishou = KuaishouCookieController();
@@ -78,6 +82,7 @@ void main() {
     final twitch = TwitchCookieBindingCookieController();
     final yy = YyCookieBindingCookieController();
     addTearDown(() {
+      bilibili.onClose();
       douyin.onClose();
       huya.onClose();
       kuaishou.onClose();
@@ -86,6 +91,7 @@ void main() {
       yy.onClose();
     });
 
+    bilibili.setCookie(' \r\nbilibili=value\u0000 ');
     douyin.setCookie(' \r\ndouyin=value\u0000 ');
     huya.setCookie(' \r\nhuya=value\u0000 ');
     kuaishou.setCookie(' \r\nkuaishou=value\u0000 ');
@@ -93,6 +99,7 @@ void main() {
     twitch.setCookie(' \r\ntwitch=value\u0000 ');
     yy.setCookie(' \r\nyy=value\u0000 ');
 
+    expect(cookies.bilibiliCookie.value, 'bilibili=value');
     expect(cookies.douyinCookie.value, 'douyin=value');
     expect(cookies.huyaCookie.value, 'huya=value');
     expect(cookies.kuaishouCookie.value, 'kuaishou=value');
@@ -150,6 +157,7 @@ void main() {
 
   test('all platform cookie pages use the shared editor without a fixed action height', () async {
     const paths = [
+      'lib/modules/account/bilibili/bilibili_cookie_page.dart',
       'lib/modules/account/douyin/douyin_cookie_page.dart',
       'lib/modules/account/huya/huya_cookie_page.dart',
       'lib/modules/account/kuaishou/kuaishou_cookie_page.dart',

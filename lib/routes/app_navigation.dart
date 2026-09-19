@@ -136,16 +136,27 @@ class AppNavigator {
 
   /// 跳转至哔哩哔哩登录
   static Future toBiliBiliLogin() async {
-    var contents = [i18n("sms_login"), i18n("qrcode_login")];
+    final qrcodeLogin = i18n("qrcode_login");
+    final cookieLogin = i18n("cookie_login");
     if (Platform.isAndroid || Platform.isIOS) {
+      final smsLogin = i18n("sms_login");
+      var contents = [smsLogin, qrcodeLogin, cookieLogin];
       var result = await Utils.showOptionDialog(contents, '', title: i18n("select_login_method"));
-      if (result == i18n("sms_login")) {
+      if (result == smsLogin) {
         await Get.toNamed(RoutePath.kBiliBiliWebLogin);
-      } else if (result == i18n("qrcode_login")) {
+      } else if (result == cookieLogin) {
+        await Get.toNamed(RoutePath.kBiliBiliCookie);
+      } else if (result == qrcodeLogin) {
         await Get.toNamed(RoutePath.kBiliBiliQRLogin);
       }
     } else {
-      await Get.toNamed(RoutePath.kBiliBiliQRLogin);
+      var contents = [qrcodeLogin, cookieLogin];
+      var result = await Utils.showOptionDialog(contents, '', title: i18n("select_login_method"));
+      if (result == cookieLogin) {
+        await Get.toNamed(RoutePath.kBiliBiliCookie);
+      } else if (result == qrcodeLogin) {
+        await Get.toNamed(RoutePath.kBiliBiliQRLogin);
+      }
     }
   }
 }
