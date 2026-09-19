@@ -4,7 +4,6 @@ import 'package:dio/io.dart';
 import 'package:dio/dio.dart';
 import 'package:pure_live/core/common/core_error.dart';
 import 'package:pure_live/core/common/custom_interceptor.dart';
-import 'package:pure_live/core/common/proxy_routing.dart';
 import 'package:pure_live/common/services/settings_service.dart';
 
 class HttpClient {
@@ -33,12 +32,9 @@ class HttpClient {
           final client = io.HttpClient();
           client.idleTimeout = const Duration(seconds: 30);
           client.findProxy = (uri) {
-            final proxyCtrl = SettingsService.to.proxy;
-            return buildProxyDirective(
-              enabled: proxyCtrl.enableAppProxy.value,
-              host: proxyCtrl.appProxyHost.value,
-              port: proxyCtrl.appProxyPort.value,
-            );
+            // Evaluated per request, so switching between global and
+            // per-platform scope applies to the next request without a rebuild.
+            return SettingsService.to.proxy.directiveForAppRequest(uri);
           };
           return client;
         },

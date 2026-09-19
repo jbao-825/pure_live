@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:pure_live/core/site/niconico/niconico_api.dart';
 import 'package:pure_live/core/site/niconico/niconico_watch.dart';
+import 'package:pure_live/core/sites.dart';
 import 'package:pure_live/recorder/services/niconico_hls_input.dart';
 
 import 'playback_proxy_policy.dart';
@@ -48,8 +49,9 @@ class NiconicoPlaybackInput {
 
   Future<PlaybackInputLease> open(CancelToken cancel) async {
     if (cancel.isCancelled) throw cancel.cancelError!;
-    final directive = PlaybackProxyPolicy.currentDirective();
-    final findProxy = _findProxy ?? (_) => directive;
+    // niconico is this input's platform by construction, so the decision must
+    // not depend on the program id or on a URL lookup.
+    final findProxy = _findProxy ?? (_) => PlaybackProxyPolicy.directiveFor(siteId: Sites.niconicoSite);
     try {
       final watch = await _api.room(programId, cancel: cancel);
       if (cancel.isCancelled) throw cancel.cancelError!;

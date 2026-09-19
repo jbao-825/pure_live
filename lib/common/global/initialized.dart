@@ -7,7 +7,6 @@ import 'package:pure_live/plugins/global.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:pure_live/plugins/cache_manager.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:pure_live/core/common/proxy_routing.dart';
 import 'package:pure_live/common/utils/hive_pref_util.dart';
 import 'package:pure_live/core/common/web_socket_util.dart';
 import 'package:pure_live/common/global/platform_utils.dart';
@@ -103,31 +102,13 @@ class AppInitializer {
             : 'Windows multi-instance settings restore failed: $configFilePath',
       );
     }
-    configureRecorderProxyRouting((_) {
-      final proxy = SettingsService.to.proxy;
-      return buildProxyDirective(
-        enabled: proxy.enableAppProxy.v,
-        host: proxy.appProxyHost.v,
-        port: proxy.appProxyPort.v,
-      );
-    });
-    configureWebSocketProxyRouting((_) {
-      final proxy = SettingsService.to.proxy;
-      return buildProxyDirective(
-        enabled: proxy.enableAppProxy.v,
-        host: proxy.appProxyHost.v,
-        port: proxy.appProxyPort.v,
-      );
-    });
+    // All three transports share the application proxy endpoint and now
+    // evaluate it per request, so the platform scope applies to each target
+    // individually instead of to every request at once.
+    configureRecorderProxyRouting((uri) => SettingsService.to.proxy.directiveForAppRequest(uri));
+    configureWebSocketProxyRouting((uri) => SettingsService.to.proxy.directiveForAppRequest(uri));
     await CustomImageCacheManager.initialize(
-      proxyDirectiveProvider: () {
-        final proxy = SettingsService.to.proxy;
-        return buildProxyDirective(
-          enabled: proxy.enableAppProxy.v,
-          host: proxy.appProxyHost.v,
-          port: proxy.appProxyPort.v,
-        );
-      },
+      proxyDirectiveProvider: (uri) => SettingsService.to.proxy.directiveForAppRequest(uri),
     );
     // Android FFmpegKit must begin native initialization during application
     // startup. Deferring it until after the first frame reintroduced the

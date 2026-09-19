@@ -52,9 +52,13 @@ void main() {
   testWidgets('narrow very-large text keeps both proxy endpoints reachable', (tester) async {
     await _pumpPage(tester, english);
 
-    expect(find.text('Application Layer Proxy (Fixes startup & list refreshing)'), findsOneWidget);
+    final appTitle = find.text('Application Layer Proxy (Fixes startup & list refreshing)');
     final appHost = find.byKey(const ValueKey('app-proxy-host'));
     final appPort = find.byKey(const ValueKey('app-proxy-port'));
+    // Scroll to the card first: with the scope card above it, the title is no
+    // longer inside the initial very-large-text viewport.
+    await _scrollUntilBuilt(tester, appTitle);
+    expect(appTitle, findsOneWidget);
     await _scrollUntilBuilt(tester, appPort);
     expect(find.text('Proxy Address'), findsWidgets);
     _expectStackedEndpointFields(tester, appHost, appPort);
@@ -114,6 +118,42 @@ void main() {
     expect(hostRect.width, greaterThan(portRect.width));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('per-platform scope lists selectable platforms and previews a domain', (tester) async {
+    await _pumpPage(tester, english, size: const Size(600, 1600), textScale: 1);
+
+    await tester.tap(find.text('Proxy selected platforms only'));
+    await tester.pumpAndSettle();
+    expect(proxy.proxyScope.value, 'perSite');
+
+    // The list is written as a whole value, so unchecking survives persistence.
+    final twitch = find.byKey(const ValueKey('proxy-site-twitch'));
+    await _scrollUntilBuilt(tester, twitch);
+    await tester.tap(twitch);
+    await tester.pumpAndSettle();
+    expect(proxy.proxiedSites.toList(), ['soop']);
+
+    await tester.tap(twitch);
+    await tester.pumpAndSettle();
+    // Re-selecting appends rather than restoring the original position, so
+    // compare the membership instead of the order.
+    expect(proxy.proxiedSites.toSet(), {'twitch', 'soop'});
+
+    // The preview answers the question the built-in table would otherwise
+    // hide: is this exact domain proxied under the current settings?
+    final probe = find.byKey(const ValueKey('proxy-probe-input'));
+    await _scrollUntilBuilt(tester, probe);
+    await tester.enterText(probe, 'usher.ttvnw.net');
+    await tester.pumpAndSettle();
+    expect(find.text('Matched platform: Twitch'), findsOneWidget);
+    expect(find.text('Application requests: Through proxy'), findsOneWidget);
+
+    await tester.enterText(probe, 'live.bilibili.com');
+    await tester.pumpAndSettle();
+    expect(find.text('Matched platform: Not listed'), findsOneWidget);
+    expect(find.text('Application requests: Direct connection'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 void _expectStackedEndpointFields(WidgetTester tester, Finder host, Finder port) {
@@ -125,13 +165,15 @@ void _expectStackedEndpointFields(WidgetTester tester, Finder host, Finder port)
 }
 
 Future<void> _scrollUntilBuilt(WidgetTester tester, Finder target) async {
-  for (var attempt = 0; attempt < 20; attempt++) {
+  // The page grew a scope card above the two endpoint cards, so the bounded
+  // scan needs more steps than the original single-card layout.
+  for (var attempt = 0; attempt < 40; attempt++) {
     if (target.evaluate().isNotEmpty) {
       await tester.ensureVisible(target);
       await tester.pumpAndSettle();
       return;
     }
-    await tester.drag(find.byType(Scrollable).first, const Offset(0, -100));
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -150));
     await tester.pump();
   }
   fail('Proxy endpoint did not build after bounded scrolling.');

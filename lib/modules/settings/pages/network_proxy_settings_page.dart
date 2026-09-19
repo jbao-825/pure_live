@@ -13,6 +13,18 @@ final TextInputFormatter _proxyHostInputFormatter = TextInputFormatter.withFunct
   );
 });
 
+/// Display names for proxied platforms without a `site_<id>` translation
+/// entry. Kept in step with `Sites._createSite`.
+const Map<String, String> _proxySiteFallbackNames = {
+  'picarto': 'Picarto',
+  'twitcasting': 'TwitCasting',
+  'openrec': 'mellow-fan (OPENREC)',
+  'niconico': 'niconico',
+  'ttinglive': 'FLEX TV (TTingLive)',
+};
+
+String _proxySiteLabel(String siteId) => i18nOr('site_$siteId', _proxySiteFallbackNames[siteId] ?? siteId);
+
 class NetworkProxySettingsPage extends StatefulWidget {
   const NetworkProxySettingsPage({super.key});
 
@@ -27,6 +39,8 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
   late final TextEditingController _appPortController;
   late final TextEditingController _playerHostController;
   late final TextEditingController _playerPortController;
+  late final TextEditingController _suffixController;
+  late final TextEditingController _probeController;
   bool _appPortInvalid = false;
   bool _playerPortInvalid = false;
 
@@ -37,6 +51,8 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
     _appPortController = TextEditingController(text: proxyCtrl.appProxyPort.v.toString());
     _playerHostController = TextEditingController(text: proxyCtrl.proxyHost.v);
     _playerPortController = TextEditingController(text: proxyCtrl.proxyPort.v.toString());
+    _suffixController = TextEditingController();
+    _probeController = TextEditingController();
     _appPortInvalid = parseProxyPortInput(_appPortController.text) == null;
     _playerPortInvalid = parseProxyPortInput(_playerPortController.text) == null;
   }
@@ -47,6 +63,8 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
     _appPortController.dispose();
     _playerHostController.dispose();
     _playerPortController.dispose();
+    _suffixController.dispose();
+    _probeController.dispose();
     super.dispose();
   }
 
@@ -60,6 +78,34 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
     }
     if (_playerPortInvalid != invalid) setState(() => _playerPortInvalid = invalid);
     if (port != null) proxyCtrl.proxyPort.v = port;
+  }
+
+  void _toggleSite(String siteId, bool selected) {
+    // Assign the whole list instead of mutating it in place: the value is
+    // persisted through the Rx listener, so one write keeps Hive and the
+    // observers in step.
+    final next = proxyCtrl.proxiedSites.toList();
+    if (selected) {
+      if (!next.contains(siteId)) next.add(siteId);
+    } else {
+      next.remove(siteId);
+    }
+    proxyCtrl.proxiedSites.assignAll(next);
+  }
+
+  void _addSuffix() {
+    final value = normalizeProxyHost(_suffixController.text).toLowerCase();
+    if (value.isEmpty) return;
+    final next = proxyCtrl.customProxySuffixes.toList();
+    if (!next.contains(value)) next.add(value);
+    proxyCtrl.customProxySuffixes.assignAll(next);
+    _suffixController.clear();
+    setState(() {});
+  }
+
+  void _removeSuffix(String value) {
+    final next = proxyCtrl.customProxySuffixes.toList()..remove(value);
+    proxyCtrl.customProxySuffixes.assignAll(next);
   }
 
   Widget _buildEndpointFields({
@@ -127,6 +173,168 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
     );
   }
 
+  /// Both endpoints share this selection, so it is presented once above them.
+  Widget _buildScopeCard(ThemeData theme) {
+    final perSite = proxyCtrl.scope == ProxyScope.perSite;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        context.buildGroupTitle(i18n('proxy_scope_group_title')),
+        context.buildModernCard([
+          SwitchListTile(
+            secondary: Icon(Remix.global_line, color: theme.colorScheme.primary),
+            title: Text(i18n('proxy_scope_per_site')),
+            subtitle: Text(i18n('proxy_scope_per_site_desc')),
+            value: perSite,
+            // SwitchListTile hands over a non-null bool, unlike the tri-state
+            // checkbox below, so no null fallback belongs here.
+            onChanged: (val) =>
+                proxyCtrl.proxyScope.v = val ? ProxyScope.perSite.storageValue : ProxyScope.global.storageValue,
+          ),
+          if (perSite) ...[
+            const Divider(height: 1),
+            _buildSitePicker(theme),
+            const Divider(height: 1),
+            _buildSuffixEditor(theme),
+            const Divider(height: 1),
+            _buildProbe(theme),
+          ],
+        ]),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+
+  Widget _buildSitePicker(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Text(i18n('proxy_sites_desc'), style: theme.textTheme.bodySmall),
+        ),
+        for (final siteId in proxiedSiteDomains.keys)
+          CheckboxListTile(
+            key: ValueKey('proxy-site-$siteId'),
+            dense: true,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: Text(_proxySiteLabel(siteId)),
+            value: proxyCtrl.proxiedSites.contains(siteId),
+            onChanged: (val) => _toggleSite(siteId, val ?? false),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSuffixEditor(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(i18n('proxy_custom_suffix_title'), style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(i18n('proxy_custom_suffix_desc'), style: theme.textTheme.bodySmall),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  key: const ValueKey('proxy-suffix-input'),
+                  controller: _suffixController,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  inputFormatters: [_proxyHostInputFormatter],
+                  decoration: const InputDecoration(
+                    hintText: 'example.com',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onSubmitted: (_) => _addSuffix(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                key: const ValueKey('proxy-suffix-add'),
+                onPressed: _addSuffix,
+                child: Text(i18n('proxy_custom_suffix_add')),
+              ),
+            ],
+          ),
+          if (proxyCtrl.customProxySuffixes.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final suffix in proxyCtrl.customProxySuffixes)
+                    InputChip(
+                      label: Text(suffix),
+                      onDeleted: () => _removeSuffix(suffix),
+                      deleteIcon: const Icon(Remix.delete_bin_6_line, size: 16),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Answers "I selected this platform, so why is it still direct?" without
+  /// asking the user to read the built-in table in the source.
+  Widget _buildProbe(ThemeData theme) {
+    final raw = _probeController.text.trim();
+    final uri = raw.isEmpty ? null : Uri.tryParse(raw.contains('://') ? raw : 'https://$raw/');
+    final host = uri?.host ?? '';
+    final siteId = host.isEmpty ? null : siteIdForProxyHost(host);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(i18n('proxy_probe_title'), style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(i18n('proxy_probe_desc'), style: theme.textTheme.bodySmall),
+          const SizedBox(height: 8),
+          TextField(
+            key: const ValueKey('proxy-probe-input'),
+            controller: _probeController,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: const InputDecoration(
+              hintText: 'usher.ttvnw.net',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+          if (host.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '${i18n('proxy_probe_site')}: ${siteId == null ? i18n('proxy_probe_unknown') : _proxySiteLabel(siteId)}',
+              key: const ValueKey('proxy-probe-site'),
+              style: theme.textTheme.bodySmall,
+            ),
+            Text(
+              '${i18n('proxy_probe_app')}: '
+              '${proxyCtrl.directiveForAppRequest(uri!).startsWith('PROXY ') ? i18n('proxy_probe_proxied') : i18n('proxy_probe_direct')}',
+              key: const ValueKey('proxy-probe-app'),
+              style: theme.textTheme.bodyMedium,
+            ),
+            Text(
+              '${i18n('proxy_probe_player')}: '
+              '${proxyCtrl.directiveForPlayerRequest(source: uri).startsWith('PROXY ') ? i18n('proxy_probe_proxied') : i18n('proxy_probe_direct')}',
+              key: const ValueKey('proxy-probe-player'),
+              style: theme.textTheme.bodyMedium,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -138,6 +346,8 @@ class _NetworkProxySettingsPageState extends State<NetworkProxySettingsPage> {
           physics: const PureLiveScrollPhysics(),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           children: [
+            _buildScopeCard(theme),
+
             context.buildGroupTitle(i18n("app_proxy_group_title")),
             context.buildModernCard([
               SwitchListTile(

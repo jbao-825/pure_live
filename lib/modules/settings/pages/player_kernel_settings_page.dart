@@ -427,6 +427,15 @@ class _PlayerProxySettingsDialogState extends State<_PlayerProxySettingsDialog> 
               title: i18n("enable_player_proxy"),
               value: proxy.enableProxy,
             ),
+            // Under per-platform scope this switch alone does not mean "every
+            // stream is proxied"; say so instead of letting the dialog imply it.
+            if (proxy.scope == ProxyScope.perSite) ...[
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(i18n('proxy_scope_per_site_active'), style: Theme.of(context).textTheme.bodySmall),
+              ),
+            ],
             const SizedBox(height: 12),
             TextField(
               key: const ValueKey('player-proxy-dialog-host'),

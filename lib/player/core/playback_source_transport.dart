@@ -81,7 +81,6 @@ class PlaybackSourceTransport {
         throw const FormatException('Invalid playback input header');
       }
     }
-    final directive = PlaybackProxyPolicy.currentDirective();
     final relay = await FFmpegHlsInputRelay.startForArguments(
       [
         if (headers.isNotEmpty) ...['-headers', headers.entries.map((e) => '${e.key}: ${e.value}\r\n').join()],
@@ -89,7 +88,9 @@ class PlaybackSourceTransport {
         url,
       ],
       sourceQueryPolicy: policy,
-      findProxy: (_) => directive,
+      // The relay keeps its own loopback direct and only routes upstream
+      // requests, so each URL is judged on the platform it belongs to.
+      findProxy: (uri) => PlaybackProxyPolicy.directiveFor(source: uri),
     );
     if (relay == null) throw const FormatException('Expected a policy-bound HLS input');
     return PlaybackInputLease(relay.inputUri, relay.close);

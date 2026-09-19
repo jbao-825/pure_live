@@ -186,8 +186,8 @@ class TwitchSite implements LiveSite, LiveSiteRoomRefresher, LiveSiteRecordRoomR
           userAgent: headers['User-Agent']!,
           integrityToken: _usableIntegrityToken,
           onIntegrityToken: _applyBrowserIntegrityToken,
-          proxyHost: proxy.enableAppProxy.v ? proxy.appProxyHost.v : null,
-          proxyPort: proxy.enableAppProxy.v ? proxy.appProxyPort.v : null,
+          proxyHost: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyHost.v : null,
+          proxyPort: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyPort.v : null,
         );
         if (browserResponse != null && !hasIntegrityError(browserResponse)) {
           return browserResponse;
@@ -225,8 +225,8 @@ class TwitchSite implements LiveSite, LiveSiteRoomRefresher, LiveSiteRecordRoomR
       url: gplApiUrl,
       headers: _gqlRequestHeaders(),
       body: liveGpl,
-      proxyHost: proxy.enableAppProxy.v ? proxy.appProxyHost.v : null,
-      proxyPort: proxy.enableAppProxy.v ? proxy.appProxyPort.v : null,
+      proxyHost: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyHost.v : null,
+      proxyPort: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyPort.v : null,
     );
   }
 
@@ -272,8 +272,8 @@ class TwitchSite implements LiveSite, LiveSiteRoomRefresher, LiveSiteRecordRoomR
           clientId: headers['Client-ID']!,
           deviceId: _deviceId,
           userAgent: headers['User-Agent']!,
-          proxyHost: proxy.enableAppProxy.v ? proxy.appProxyHost.v : null,
-          proxyPort: proxy.enableAppProxy.v ? proxy.appProxyPort.v : null,
+          proxyHost: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyHost.v : null,
+          proxyPort: proxy.appProxyAppliesToSite(Sites.twitchSite) ? proxy.appProxyPort.v : null,
         );
         if (browserToken != null) {
           _applyBrowserIntegrityToken(browserToken);

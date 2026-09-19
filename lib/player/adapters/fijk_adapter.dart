@@ -216,11 +216,11 @@ class FijkAdapter
     }
   }
 
-  Future<void> _setupProxy({required bool privateInput}) async {
+  Future<void> _setupProxy({required bool privateInput, String? siteId, Uri? source}) async {
     await _player.setOption(
       FijkOption.formatCategory,
       "http_proxy",
-      PlaybackProxyPolicy.currentNativeUrl(privateInput: privateInput),
+      PlaybackProxyPolicy.nativeUrlFor(siteId: siteId, source: source, privateInput: privateInput),
     );
   }
 
@@ -273,7 +273,7 @@ class FijkAdapter
       if (_player.state != FijkState.idle) {
         await _player.reset();
       }
-      await _setupProxy(privateInput: privateInput);
+      await _setupProxy(privateInput: privateInput, siteId: room?.platform, source: Uri.tryParse(url));
       await FijkHelper.setFijkOption(
         _player,
         enableCodec: SettingsService.to.player.enableCodec.v,

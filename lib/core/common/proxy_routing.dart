@@ -54,3 +54,107 @@ String buildProxyDirective({required bool enabled, required String host, require
       : normalizedHost;
   return 'PROXY $endpointHost:$port';
 }
+
+/// Which requests a configured proxy endpoint applies to.
+///
+/// [global] keeps the historical behaviour (every request through the owning
+/// transport). [perSite] narrows it to the platforms the user selected, so
+/// domestic and unselected platforms keep a direct connection.
+enum ProxyScope {
+  global('global'),
+  perSite('perSite');
+
+  const ProxyScope(this.storageValue);
+
+  final String storageValue;
+
+  /// Missing or unrecognized values keep the historical all-traffic behaviour.
+  static ProxyScope fromStorage(String? value) => value == perSite.storageValue ? perSite : global;
+}
+
+/// Domains owned by the platforms this app can route through a proxy.
+///
+/// Only suffixes that appear in this repository's own platform adapters are
+/// listed. A selected platform whose media CDN is not listed here stays
+/// direct rather than being guessed, which is why [customProxySuffixes]
+/// exists.
+const Map<String, List<String>> proxiedSiteDomains = {
+  'twitch': ['twitch.tv', 'ttvnw.net'],
+  'soop': ['sooplive.co.kr', 'sooplive.com'],
+  'picarto': ['picarto.tv'],
+  'twitcasting': ['twitcasting.tv'],
+  'openrec': ['mellow-fan.com'],
+  'niconico': ['nicovideo.jp'],
+  'ttinglive': ['flextv.co.kr'],
+};
+
+/// Platforms pre-selected when per-platform mode is first enabled.
+const List<String> defaultProxiedSites = ['twitch', 'soop'];
+
+bool _hostMatchesSuffix(String host, String suffix) => host == suffix || host.endsWith('.$suffix');
+
+String _normalizeDomain(String value) => value.trim().toLowerCase().replaceAll('。', '.');
+
+/// Resolves the platform owning [host], or null when it is not a known
+/// proxied-platform domain.
+String? siteIdForProxyHost(String host) {
+  final target = _normalizeDomain(host);
+  if (target.isEmpty) return null;
+  for (final entry in proxiedSiteDomains.entries) {
+    for (final suffix in entry.value) {
+      if (_hostMatchesSuffix(target, suffix)) return entry.key;
+    }
+  }
+  return null;
+}
+
+/// Whether a user-supplied suffix list covers [host].
+///
+/// Entries may be written as `example.com` or `*.example.com`; a leading
+/// wildcard is accepted because that is how users describe CDN domains.
+bool hostMatchesCustomSuffixes(String host, Iterable<String> suffixes) {
+  final target = _normalizeDomain(host);
+  if (target.isEmpty) return false;
+  for (final raw in suffixes) {
+    final suffix = _normalizeDomain(raw).replaceFirst(RegExp(r'^\*\.'), '');
+    if (suffix.isEmpty) continue;
+    if (_hostMatchesSuffix(target, suffix)) return true;
+  }
+  return false;
+}
+
+/// Builds the directive for a single request under the active scope.
+///
+/// [siteId] is the platform owning the request when the caller already knows
+/// it (a player opening a room). Callers that only have a URL pass
+/// [targetHost] and let the built-in table plus [customSuffixes] decide.
+String buildScopedProxyDirective({
+  required bool enabled,
+  required String proxyHost,
+  required int proxyPort,
+  required ProxyScope scope,
+  required Iterable<String> proxiedSites,
+  required Iterable<String> customSuffixes,
+  required String targetHost,
+  String? siteId,
+}) {
+  if (!enabled) return 'DIRECT';
+  final endpoint = buildProxyDirective(enabled: true, host: proxyHost, port: proxyPort);
+  if (endpoint == 'DIRECT') return 'DIRECT';
+  if (scope == ProxyScope.global) return endpoint;
+
+  final selected = <String>{
+    for (final site in proxiedSites)
+      if (site.trim().isNotEmpty) site.trim().toLowerCase(),
+  };
+
+  final explicitSite = siteId?.trim().toLowerCase();
+  final bool allowed;
+  if (explicitSite != null && explicitSite.isNotEmpty) {
+    allowed = selected.contains(explicitSite);
+  } else {
+    final resolved = siteIdForProxyHost(targetHost);
+    allowed = resolved != null ? selected.contains(resolved) : hostMatchesCustomSuffixes(targetHost, customSuffixes);
+  }
+  return allowed ? endpoint : 'DIRECT';
+}

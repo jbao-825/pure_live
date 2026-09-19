@@ -105,13 +105,15 @@ class _MediaKitCellPlayer implements MultiviewCellPlayerHandle, MultiviewNativeI
     if (_disposed) throw StateError('Multiview native owner is disposed');
   }
 
-  Future<void> _configureInput(Player player) async {
+  Future<void> _configureInput(Player player, String url) async {
     _checkLive();
     if (player.platform is NativePlayer) {
       final native = player.platform as dynamic;
+      // 每格持有独立 player 实例，但代理仍是实例级属性：按本格媒体地址所属
+      // 平台判定，未选中的平台显式清空，避免沿用上一格的端点。
       await native.setProperty(
         'http-proxy',
-        PlaybackProxyPolicy.nativeUrl(PlaybackProxyPolicy.currentDirective(), privateInput: _privateInput),
+        PlaybackProxyPolicy.nativeUrlFor(source: Uri.tryParse(url), privateInput: _privateInput),
       );
     }
     _checkLive();
@@ -188,7 +190,7 @@ class _MediaKitCellPlayer implements MultiviewCellPlayerHandle, MultiviewNativeI
     );
     _controller = controller;
 
-    await _configureInput(player);
+    await _configureInput(player, url);
     await player.open(Media(url, httpHeaders: headers), play: true);
   }
 
@@ -233,7 +235,7 @@ class _MediaKitCellPlayer implements MultiviewCellPlayerHandle, MultiviewNativeI
       // 换流必须发生在已起播的实例上；未起播说明调用方状态机有缺陷。
       throw StateError('MultiviewCellPlayer: open before start');
     }
-    await _configureInput(player);
+    await _configureInput(player, url);
     await player.open(Media(url, httpHeaders: headers), play: true);
   }
 

@@ -120,9 +120,12 @@ class MediaKitAdapter
       await native.setProperty('ao', audioOutput);
     }
 
-    // Multiview also calls this shared initializer. Keep its media routing;
-    // the main adapter applies it again per source, bypassing private input.
-    await native.setProperty('http-proxy', PlaybackProxyPolicy.currentNativeUrl(privateInput: false));
+    // The proxy is deliberately NOT decided here. This shared initializer runs
+    // before any room is known and mpv's `http-proxy` is an instance-wide
+    // property, so an endpoint configured here would leak one room's platform
+    // into the next room. Clearing it keeps startup direct; every real open
+    // then sets the value from its own room (see `_openSource`).
+    await native.setProperty('http-proxy', '');
 
     if (PlatformUtils.isMacOS) {
       await native.setProperty('hwdec', 'no');
@@ -577,10 +580,15 @@ class MediaKitAdapter
       await _applyDecoderPolicyForSource(sourceIdentity);
 
       if (_player.platform is NativePlayer) {
-        await (_player.platform as dynamic).setProperty(
-          'http-proxy',
-          PlaybackProxyPolicy.currentNativeUrl(privateInput: privateInput),
+        // mpv holds one proxy for the whole player instance, so the room
+        // decides. A room on an unselected platform clears any endpoint left
+        // behind by the previous one.
+        final proxyUrl = PlaybackProxyPolicy.nativeUrlFor(
+          siteId: room?.platform,
+          source: Uri.tryParse(url),
+          privateInput: privateInput,
         );
+        await (_player.platform as dynamic).setProperty('http-proxy', proxyUrl);
       }
 
       await _player.open(Media(url, httpHeaders: headers), play: true);

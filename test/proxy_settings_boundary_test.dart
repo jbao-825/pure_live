@@ -94,6 +94,63 @@ void main() {
       'enableAppProxy': false,
       'appProxyHost': '127.0.0.1',
       'appProxyPort': ProxySettingsController.defaultProxyPort,
+      'proxyScope': 'global',
+      'proxiedSites': ['twitch', 'soop'],
+      'customProxySuffixes': <String>[],
     });
+  });
+
+  test('scope and platform lists round-trip and fall back safely', () {
+    // An older backup (or a fresh install) carries none of the new keys and
+    // must land on the historical all-traffic behaviour.
+    final legacy = ProxySettingsController.parseConfig(const {});
+    expect(legacy['proxyScope'], 'global');
+    expect(legacy['proxiedSites'], ['twitch', 'soop']);
+    expect(legacy['customProxySuffixes'], isEmpty);
+
+    final malformed = ProxySettingsController.parseConfig(const {
+      'proxyScope': 'nonsense',
+      'proxiedSites': 'twitch',
+      'customProxySuffixes': [42, '', '  example.net  '],
+    });
+    expect(malformed['proxyScope'], 'global');
+    expect(malformed['proxiedSites'], ['twitch', 'soop']);
+    expect(malformed['customProxySuffixes'], ['42', 'example.net']);
+
+    final perSite = ProxySettingsController.extractConfig(const {
+      'proxy': {'proxyScope': 'perSite', 'proxiedSites': ['twitch']},
+    });
+    expect(perSite['proxyScope'], 'perSite');
+    expect(perSite['proxiedSites'], ['twitch']);
+  });
+
+  test('per-platform scope with nothing selected proxies nothing', () async {
+    final proxy = Get.put(ProxySettingsController());
+    proxy.proxyScope.value = 'perSite';
+    proxy.proxiedSites.assignAll(const <String>[]);
+
+    expect(proxy.scope.name, 'perSite');
+    expect(proxy.appProxyAppliesToSite('twitch'), isFalse);
+    expect(proxy.directiveForAppRequest(Uri.parse('https://gql.twitch.tv/gql')), 'DIRECT');
+    expect(proxy.directiveForPlayerRequest(siteId: 'twitch'), 'DIRECT');
+  });
+
+  test('an enabled endpoint still yields a proxy directive for a selected platform', () async {
+    final proxy = Get.put(ProxySettingsController());
+    proxy.proxyScope.value = 'perSite';
+    proxy.proxiedSites.assignAll(const ['twitch']);
+    proxy.enableAppProxy.value = true;
+    proxy.appProxyHost.value = '127.0.0.1';
+    proxy.appProxyPort.value = 7897;
+    proxy.enableProxy.value = true;
+    proxy.proxyHost.value = '127.0.0.1';
+    proxy.proxyPort.value = 1080;
+
+    expect(proxy.appProxyAppliesToSite('twitch'), isTrue);
+    expect(proxy.appProxyAppliesToSite('bilibili'), isFalse);
+    expect(proxy.directiveForAppRequest(Uri.parse('https://gql.twitch.tv/gql')), 'PROXY 127.0.0.1:7897');
+    expect(proxy.directiveForAppRequest(Uri.parse('https://api.bilibili.com/x')), 'DIRECT');
+    expect(proxy.directiveForPlayerRequest(siteId: 'twitch'), 'PROXY 127.0.0.1:1080');
+    expect(proxy.directiveForPlayerRequest(siteId: 'douyu'), 'DIRECT');
   });
 }

@@ -5,7 +5,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 class CustomImageCacheManager {
   static const String key = 'pureLiveImagesV2';
-  static String Function()? _proxyDirectiveProvider;
+  static String Function(Uri)? _proxyDirectiveProvider;
 
   static final CacheManager instance = _createManager();
 
@@ -16,9 +16,9 @@ class CustomImageCacheManager {
     // and avatars previously used flutter_cache_manager's separate DIRECT
     // client, so API cards could load through the app proxy while all images
     // still failed DNS independently.
-    client.findProxy = (_) {
+    client.findProxy = (uri) {
       try {
-        return _proxyDirectiveProvider?.call() ?? 'DIRECT';
+        return _proxyDirectiveProvider?.call(uri) ?? 'DIRECT';
       } catch (_) {
         return 'DIRECT';
       }
@@ -36,7 +36,7 @@ class CustomImageCacheManager {
   /// Covers and avatars share one bounded cache. A short stale period lets a
   /// later widget resolve revalidate a reused platform URL without globally
   /// tearing down every visible image at the same instant.
-  static Future<void> initialize({String Function()? proxyDirectiveProvider}) async {
+  static Future<void> initialize({String Function(Uri)? proxyDirectiveProvider}) async {
     _proxyDirectiveProvider = proxyDirectiveProvider;
     instance;
   }
