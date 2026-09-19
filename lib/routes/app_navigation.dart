@@ -100,7 +100,11 @@ class AppNavigator {
       } else {
         manager.cancelRoomSessionReentry();
       }
-      await Get.toNamed(RoutePath.kLivePlay, arguments: normalizedRoom, parameters: {"site": platform});
+      await Get.toNamed(
+        RoutePath.kLivePlay,
+        arguments: normalizedRoom,
+        parameters: {"site": platform, "entryFill": "1"},
+      );
     } finally {
       _openingLiveRoom = false;
     }
@@ -116,7 +120,11 @@ class AppNavigator {
     final normalizedRoom = liveRoom.platform == platform && liveRoom.roomId == roomId
         ? liveRoom
         : liveRoom.copyWith(platform: platform, roomId: roomId);
-    await Get.offAndToNamed(RoutePath.kLivePlay, arguments: normalizedRoom, parameters: {"site": platform});
+    await Get.offAndToNamed(
+      RoutePath.kLivePlay,
+      arguments: normalizedRoom,
+      parameters: {"site": platform, "entryFill": "1"},
+    );
   }
 
   /// 跳转至多画面同看页面。

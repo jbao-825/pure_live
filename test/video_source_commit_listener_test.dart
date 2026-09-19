@@ -952,7 +952,7 @@ void main() {
     () async {
       final room = LiveRoom(platform: 'fixture', roomId: 'window-fill', link: 'https://fixture/live');
       final manager = _FakePlayerManager(room, null);
-      final live = _FakeLivePlayController();
+      final live = _FakeLivePlayController()..entryFillWindow = true;
       final controller = _controller(
         room: room,
         manager: manager,
@@ -971,6 +971,9 @@ void main() {
       expect(live.normalScreenCalls, 0);
       expect(GlobalPlayerState.to.isWindowFullscreen.value, isTrue);
       expect(GlobalPlayerState.to.isFullscreen.value, isFalse);
+      // The page entry is spent by this first session: anything rebuilt inside
+      // the same entry reads false and keeps the layout above.
+      expect(live.consumeEntryWindowFill(), isFalse);
     },
     skip: Platform.isWindows ? null : 'Windows-only room presentation',
   );
@@ -980,7 +983,7 @@ void main() {
     () async {
       final room = LiveRoom(platform: 'fixture', roomId: 'float-return', link: 'https://fixture/live');
       final manager = _FakePlayerManager(room, _commit(revision: 2, room: room, url: room.link!));
-      final live = _FakeLivePlayController();
+      final live = _FakeLivePlayController()..entryFillWindow = true;
       final controller = _controller(
         room: room,
         manager: manager,
@@ -995,6 +998,50 @@ void main() {
 
       expect(live.widescreenCalls, 0);
       expect(GlobalPlayerState.to.isWindowFullscreen.value, isFalse);
+      // A retained session applies no fill, yet it still spends the entry: a
+      // room switch after the floating-window restore cannot start filling.
+      expect(live.consumeEntryWindowFill(), isFalse);
+    },
+    skip: Platform.isWindows ? null : 'Windows-only room presentation',
+  );
+
+  test(
+    'a player session rebuilt inside the same entry keeps the layout the user is in',
+    () async {
+      final room = LiveRoom(platform: 'fixture', roomId: 'in-session-rebuild', link: 'https://fixture/live');
+      final manager = _FakePlayerManager(room, null);
+      final live = _FakeLivePlayController()..entryFillWindow = true;
+
+      // The page entry spends its fill on the first player session.
+      final entryController = _controller(
+        room: room,
+        manager: manager,
+        reuseCurrentSession: false,
+        onSourceCommitted: (_) {},
+        livePlayController: live,
+      );
+      addTearDown(manager.disposeFixture);
+      addTearDown(entryController.dispose);
+      await entryController.initialization;
+
+      expect(live.widescreenCalls, 1);
+      expect(GlobalPlayerState.to.isWindowFullscreen.value, isTrue);
+      entryController.dispose();
+
+      // Switch room and refresh replace this controller while the route stays
+      // open. That rebuild must not pull the window back into the fill.
+      final rebuilt = _controller(
+        room: room,
+        manager: manager,
+        reuseCurrentSession: false,
+        onSourceCommitted: (_) {},
+        livePlayController: live,
+      );
+      addTearDown(rebuilt.dispose);
+      await rebuilt.initialization;
+
+      expect(live.widescreenCalls, 1);
+      expect(live.normalScreenCalls, 0);
     },
     skip: Platform.isWindows ? null : 'Windows-only room presentation',
   );
@@ -1289,6 +1336,20 @@ class _FakeLivePlayController implements LivePlayController {
   /// them instead of the inherited `noSuchMethod` throw.
   int widescreenCalls = 0;
   int normalScreenCalls = 0;
+
+  /// Only a page entry may fill the window, and only for the first player
+  /// session of that entry. A fixture that leaves this false keeps the ordinary
+  /// layout, which is what the in-player rebuilds (switch room, refresh) do.
+  @override
+  bool entryFillWindow = false;
+  bool _entryFillWindowConsumed = false;
+
+  @override
+  bool consumeEntryWindowFill() {
+    if (_entryFillWindowConsumed) return false;
+    _entryFillWindowConsumed = true;
+    return entryFillWindow;
+  }
 
   @override
   void setWidescreen() => widescreenCalls++;

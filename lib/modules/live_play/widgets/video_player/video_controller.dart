@@ -637,16 +637,19 @@ class VideoController with ChangeNotifier implements DanmakuSettingsBinding {
     _defaultPresentationTimer = null;
     if (_isDisposed) return;
 
+    // Consume unconditionally, before the retained-session check: a session
+    // re-attached after the floating window applies no fill, but it still
+    // spends this route's entry, so a room switch later in the same session
+    // cannot start filling a layout the user already settled into.
+    final entryFillWindow = _livePlayController.consumeEntryWindowFill();
     final presentation = resolveDefaultRoomPresentation(
       isWindows: Platform.isWindows,
       enableFullScreenDefault: _settingsService.app.enableFullScreenDefault.v,
+      fillWindowOnEntry: entryFillWindow && !reuseCurrentSession,
     );
     switch (presentation) {
       case DefaultRoomPresentation.windowFill:
-        // Only a freshly opened source adopts the room default. A retained
-        // session re-attached after the floating window keeps the presentation
-        // the user left it in, which the floating-window exit already restores.
-        if (!reuseCurrentSession) enterWindowFullScreen();
+        enterWindowFullScreen();
       case DefaultRoomPresentation.fullscreen:
         _defaultPresentationTimer = Timer(_fullscreenDelay, () {
           _defaultPresentationTimer = null;

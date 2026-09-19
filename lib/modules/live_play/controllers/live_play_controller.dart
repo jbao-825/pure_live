@@ -43,14 +43,39 @@ enum IptvPlaybackSwitchResult { started, superseded, failed }
 class LivePlayController extends GetxController
     with GetSingleTickerProviderStateMixin, WidgetsBindingObserver
     implements DanmakuSessionHost, PlayerSessionHost {
-  LivePlayController({required this.room, required this.site}) : _iptvPlayerStarter = null;
+  LivePlayController({required this.room, required this.site, this.entryFillWindow = false})
+    : _iptvPlayerStarter = null;
 
   @visibleForTesting
-  LivePlayController.withIptvPlayerStarter(this._iptvPlayerStarter, {required this.room, required this.site});
+  LivePlayController.withIptvPlayerStarter(
+    this._iptvPlayerStarter, {
+    required this.room,
+    required this.site,
+    this.entryFillWindow = false,
+  });
 
   final String site;
   final LiveRoom room;
   final IptvPlayerStarter? _iptvPlayerStarter;
+
+  /// Whether this route entry may apply the room's window-fill presentation.
+  ///
+  /// Set only by [LivePlayBinding] from the route parameters, so it describes
+  /// the page entry and not the player session: the rebuilds that happen inside
+  /// one room session (switch room, refresh, floating-window restore) must not
+  /// change the layout the user is already looking at.
+  final bool entryFillWindow;
+  bool _entryFillWindowConsumed = false;
+
+  /// Returns [entryFillWindow] for the first player session of this route, then
+  /// false. Every later rebuild reuses the same controller instance, so this is
+  /// the single gate that keeps the fill from re-applying on a room switch or a
+  /// refresh.
+  bool consumeEntryWindowFill() {
+    if (_entryFillWindowConsumed) return false;
+    _entryFillWindowConsumed = true;
+    return entryFillWindow;
+  }
 
   late final TimerController timerController;
   late final DanmakuController danmakuController;
