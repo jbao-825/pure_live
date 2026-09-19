@@ -1,13 +1,18 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:developer';
+
+import 'package:path/path.dart' as p;
+
 import 'app_path_manager.dart';
+
 import 'package:pure_live/common/index.dart';
 import 'package:pure_live/plugins/global.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:pure_live/plugins/cache_manager.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:pure_live/common/utils/hive_pref_util.dart';
+import 'package:pure_live/common/utils/settings_overlay_sync.dart';
 import 'package:pure_live/core/common/web_socket_util.dart';
 import 'package:pure_live/common/global/platform_utils.dart';
 import 'package:pure_live/common/global/initial_services.dart';
@@ -19,9 +24,6 @@ import 'package:pure_live/recorder/services/recorder_proxy_routing.dart';
 import 'package:pure_live/common/services/settings/backup_controller.dart';
 import 'package:pure_live/common/utils/windows_multi_instance_launcher.dart';
 import 'package:pure_live/common/services/utils/settings_upgrade_migration.dart';
-
-
-
 
 /// Keep decoded cover/avatar memory bounded independently from the encoded
 /// HTTP/disk cache. A 960x540 RGBA cover is roughly 2 MiB after decoding, so
@@ -102,6 +104,7 @@ class AppInitializer {
             : 'Windows multi-instance settings restore failed: $configFilePath',
       );
     }
+    await _configureSettingsOverlay(instanceId);
     // All three transports share the application proxy endpoint and now
     // evaluate it per request, so the platform scope applies to each target
     // individually instead of to every request at once.
@@ -141,6 +144,47 @@ class AppInitializer {
 
   @visibleForTesting
   static bool shouldStartRecorderPrewarmImmediately({required bool mobile}) => mobile;
+
+  /// Connects the two halves of child-window settings sync.
+  ///
+  /// A child window owns an isolated settings box, so a change made in one
+  /// would otherwise die with its data directory the moment the window closes.
+  /// A child window therefore contributes every written key to a patch file,
+  /// and the primary window merges those patches back.
+  ///
+  /// Both halves must start *after* the multi-instance snapshot import above:
+  /// that import writes hundreds of inherited keys, and recording them as user
+  /// changes would turn every patch into a full settings copy.
+  Future<void> _configureSettingsOverlay(String instanceId) async {
+    if (!Platform.isWindows || _overlayCollector != null) return;
+    try {
+      final overlayDir = await AppPathManager().settingsOverlayDir;
+      SettingsOverlaySync.configure(overlayDir);
+
+      if (instanceId.isNotEmpty) {
+        // Held for the whole session: dropping the reference would let the
+        // collector - and the writes still waiting on its debounce - go away.
+        _overlayCollector = SettingsOverlayCollector(File(p.join(overlayDir.path, '$instanceId.json')))..start();
+        return;
+      }
+
+      // The startup merge covers child windows that ended while this one was
+      // not running. The launcher merges again right before every snapshot
+      // export, which covers the far more common case of the primary window
+      // staying open the whole time.
+      final merged = await SettingsOverlaySync.applyPending(overlayDir);
+      if (merged > 0) log('已合并 $merged 个子窗口设置补丁');
+      // Keep merging while this window stays open. Without the watch a change
+      // made in a child window stays invisible here until the next restart or
+      // the next new window, which reads as "the change was not saved".
+      unawaited(SettingsOverlaySync.watchDirectory(overlayDir));
+    } catch (error) {
+      // Settings sync is an enhancement; it must never block startup.
+      log('子窗口设置补丁初始化失败: $error');
+    }
+  }
+
+  SettingsOverlayCollector? _overlayCollector;
 
   Future<void> _initWindowsSingleInstance(List<String> args, String instanceId) async {
     if (!Platform.isWindows) return;

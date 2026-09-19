@@ -5,6 +5,22 @@ class HivePrefUtil {
   static Map<String, dynamic>? _writeBatch;
   static bool get isCollectingWrites => _writeBatch != null;
 
+  /// Observes every settings write. A Windows child window uses this to mirror
+  /// its changes into a patch file the primary window merges back; unset - and
+  /// therefore free - everywhere else.
+  static void Function(String key, dynamic value)? _prefWriteListener;
+
+  /// Drains whatever [_prefWriteListener] buffers.
+  static Future<void> Function()? _prefFlushListener;
+
+  /// Attaches or detaches the write observer. Keeping this a pair of callbacks
+  /// rather than a file means this class stays free of `dart:io`, so the web
+  /// and mobile builds are untouched.
+  static void watchWrites({void Function(String key, dynamic value)? onWrite, Future<void> Function()? onFlush}) {
+    _prefWriteListener = onWrite;
+    _prefFlushListener = onFlush;
+  }
+
   /// Collect settings notifications and await their actual storage
   /// result. This is not a transaction for Rx state or external side effects.
   static Future<void> persistBatch(void Function() update) async {
@@ -29,6 +45,7 @@ class HivePrefUtil {
   }
 
   static Future<void> _put(String key, dynamic value) {
+    _prefWriteListener?.call(key, value);
     final batch = _writeBatch;
     if (batch != null) {
       batch[key] = value;
@@ -124,5 +141,10 @@ class HivePrefUtil {
   /// Waits until all queued settings writes reach disk. Desktop shutdown uses
   /// this before destroying the native window so rapid final changes survive
   /// an application update or immediate exit.
-  static Future<void> flush() => _box.flush();
+  static Future<void> flush() async {
+    // A write observer may still be buffering changes that never reached
+    // storage on their own; draining it here keeps shutdown a single point.
+    await _prefFlushListener?.call();
+    await _box.flush();
+  }
 }

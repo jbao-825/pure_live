@@ -29,6 +29,11 @@ class AppPathManager {
   static const String dirEmojiCache = 'EMOJI_CACHE';
   static const String dirMigrationBackup = 'MIGRATION_BACKUP';
 
+  /// Holds the settings patches child windows leave for the primary window.
+  /// Deliberately outside the `window_<pid>_<micros>` shape so the abandoned
+  /// instance reclaim never treats it as a dead window's data root.
+  static const String dirSettingsOverlay = 'SETTINGS_OVERLAY';
+
   /// Canonical directory used by [FontDownloadManager] for downloaded fonts.
   /// Keep this in one place so the manager page and downloader never drift to
   /// different folders (the old `fontsDir` value broke multi-file font packs).
@@ -41,6 +46,7 @@ class AppPathManager {
   static const String iptvHotRemoteFile = 'https://raw.githubusercontent.com/YueChan/Live/main/GNTV.m3u';
 
   String? _basePath;
+  String? _sharedRoot;
   List<String> _legacyHiveFiles = const [];
 
   /// Per-instance lease file. A child window holds it exclusively for its whole
@@ -92,6 +98,10 @@ class AppPathManager {
     }
     await Directory(rootPath).create(recursive: true);
     _basePath = rootPath;
+    // A child window's root is one level below the primary one. Both kinds
+    // share this parent, which is where settings patches have to land for the
+    // primary window to find them.
+    _sharedRoot = sanitizedInstanceId.isEmpty ? rootPath : p.dirname(rootPath);
 
     if (Platform.isWindows) {
       if (sanitizedInstanceId.isNotEmpty) {
@@ -383,10 +393,7 @@ class AppPathManager {
   /// Each window owns a full copy of `TEMP` (image cache), `LOGS`,
   /// `PLUGIN_SUPPORT` and the settings snapshot. Instance ids are never reused,
   /// so without this every window ever opened would stay on disk for good.
-  Future<void> _reclaimAbandonedInstances({
-    required String parentRoot,
-    required String ownInstanceId,
-  }) async {
+  Future<void> _reclaimAbandonedInstances({required String parentRoot, required String ownInstanceId}) async {
     try {
       final parent = Directory(parentRoot);
       if (!await parent.exists()) return;
@@ -484,6 +491,16 @@ class AppPathManager {
   Future<Directory> get migrationWorkingDir => getDir(p.join(dirMigrationBackup, 'working'));
 
   String get basePath => _basePath ?? (throw StateError('AppPathManager 尚未初始化'));
+
+  /// Data root shared by the primary window and every child window.
+  String get sharedRoot => _sharedRoot ?? (throw StateError('AppPathManager 尚未初始化'));
+
+  /// Where child windows leave their settings patches.
+  Future<Directory> get settingsOverlayDir async {
+    final directory = Directory(p.join(sharedRoot, dirSettingsOverlay));
+    if (!await directory.exists()) await directory.create(recursive: true);
+    return directory;
+  }
 
   Future<String> getFontFamilyFolderPath(String id) async {
     final downloadDir = await getDir(dirDownload);

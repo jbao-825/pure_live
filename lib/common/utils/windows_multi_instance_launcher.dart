@@ -1,10 +1,11 @@
 import 'dart:io';
 import 'dart:convert';
+
 import 'package:path/path.dart' as p;
 import 'package:pure_live/get/get.dart';
 import 'package:pure_live/common/models/live_room.dart';
 import 'package:pure_live/common/services/settings/backup_controller.dart';
-
+import 'package:pure_live/common/utils/settings_overlay_sync.dart';
 
 /// Launches an isolated Windows player process.
 ///
@@ -108,6 +109,12 @@ class WindowsMultiInstanceLauncher {
 
   static Future<File> _createConfigFile(String instanceId) async {
     final backupController = Get.find<BackupController>();
+
+    // Absorb settings patches left behind by other child windows before
+    // exporting. Without this the snapshot would carry the values this window
+    // started with, so a change made in another window - or in an earlier one -
+    // would be silently reverted the next time a room is opened here.
+    await SettingsOverlaySync.applyPendingFromConfiguredDirectory();
 
     final data = backupController.exportAllSettings(includeSensitiveData: true);
 
