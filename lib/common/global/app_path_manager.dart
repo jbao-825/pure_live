@@ -108,16 +108,23 @@ class AppPathManager {
     }
 
     if (!kIsWeb && Platform.isWindows) {
-      final legacyRoots = await _discoverWindowsLegacyRoots(
-        appDir: appDir,
-        supportDir: supportDir,
-        cacheDir: cacheDir,
-        instanceId: sanitizedInstanceId,
-      );
-      _legacyHiveFiles = await _findLegacyHiveFiles(roots: legacyRoots, targetRoot: rootPath);
-      await _createMigrationBackups(_legacyHiveFiles);
-      await _recoverMissingPersistentData(legacyRoots);
-      await _recoverLegacyPluginPreferences(supportDir);
+      // A child window starts from a data root that was created moments ago, so
+      // the legacy-install discovery (uninstall-registry scan, install-history
+      // ledger walk, Hive probe) can never match anything for it. Skipping the
+      // block removes a registry/disk pass from every new-window launch; the
+      // portable path redirection below still applies to both window kinds.
+      if (sanitizedInstanceId.isEmpty) {
+        final legacyRoots = await _discoverWindowsLegacyRoots(
+          appDir: appDir,
+          supportDir: supportDir,
+          cacheDir: cacheDir,
+          instanceId: sanitizedInstanceId,
+        );
+        _legacyHiveFiles = await _findLegacyHiveFiles(roots: legacyRoots, targetRoot: rootPath);
+        await _createMigrationBackups(_legacyHiveFiles);
+        await _recoverMissingPersistentData(legacyRoots);
+        await _recoverLegacyPluginPreferences(supportDir);
+      }
 
       // Portable/EXE builds keep plugin support, cache and temporary state
       // beside the executable. MSIX already receives a writable package data

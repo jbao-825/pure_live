@@ -1,4 +1,5 @@
 import 'package:pure_live/common/index.dart';
+import 'package:pure_live/common/global/initialized.dart';
 import 'package:pure_live/modules/home/home_page.dart';
 import 'package:pure_live/modules/auth/mine_page.dart';
 import 'package:pure_live/modules/iptv/iptv_page.dart';
@@ -212,7 +213,9 @@ class AppPages {
             // the already-running favourite verification. Fast networks enter
             // Home with a settled grid; slow platforms never hold the splash
             // beyond this budget and finish in the background.
-            if (Get.isRegistered<FavoriteController>()) {
+            // A child window never renders the favourite grid, so its launch
+            // must not fan out a full verification pass either.
+            if (AppInitializer().instanceId.isEmpty && Get.isRegistered<FavoriteController>()) {
               try {
                 await Future.any<void>([
                   Get.find<FavoriteController>().refreshPersistedRoomsOnStartup(),

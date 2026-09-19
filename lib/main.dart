@@ -174,6 +174,10 @@ class _MyAppState extends State<MyApp> with DesktopWindowMixin {
           final themeColor = SettingsService.to.theme.themeColor;
           final showSplashPage = SettingsService.to.app.showSplashPage.v;
           final currentFactor = SettingsService.to.font.textScaleFactor.v;
+          // A child window exists to play exactly one room: it never shows the
+          // brand splash, and skipping it removes a fixed one-second delay from
+          // every "open a room in a new window" launch.
+          final bool isChildWindow = AppInitializer().instanceId.isNotEmpty;
 
           ThemeData lightTheme;
           ThemeData darkTheme;
@@ -241,7 +245,7 @@ class _MyAppState extends State<MyApp> with DesktopWindowMixin {
               // from flutter/material.dart and must be registered alongside it.
               material.GlobalMaterialLocalizations.delegate,
             ],
-            initialRoute: showSplashPage ? RoutePath.kSplash : RoutePath.kInitial,
+            initialRoute: showSplashPage && !isChildWindow ? RoutePath.kSplash : RoutePath.kInitial,
             defaultTransition: Transition.native,
             routingCallback: (routing) {
               if (routing != null) {
