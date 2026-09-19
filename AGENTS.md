@@ -21,6 +21,8 @@
 - For bugs and upstream work, use [MAINTENANCE_POLICY.md](MAINTENANCE_POLICY.md). Find the first invalid state and classify provenance; use `not-reproduced` when evidence is insufficient. Broaden review to callers, adjacent modes and resource ownership, not unrelated files by default.
 - Read [UPSTREAM_REVIEW_POLICY.md](UPSTREAM_REVIEW_POLICY.md) only for upstream comparison/integration. Every incoming commit/file needs review before an authorized merge. A local fix does not imply an upstream merge.
 - Android and Windows are maintained first. New feature requests in fork Issues route upstream; explicit user-requested development retains its requested scope.
+- Windows-first change scope is a default, not a red line: change only the Windows client and leave macOS, Linux, iOS and Android code, configuration and behavior unchanged and unaffected. The point is to keep the change surface small and the regression cost low. If honoring it costs more than it saves — for example it forces bespoke per-platform branches, or contorted shared logic, purely to avoid touching the other platforms — that is the wrong trade: drop the restriction and change the shared code properly instead, keeping each platform's existing behavior intact.
+- When shared cross-platform code must change for a Windows-only goal, preserve the other platforms' existing logic (platform branches or constructor-derived flags, rather than altering default paths) and state in the delivery notes why the change cannot be fully isolated to Windows.
 - Preserve playback/session ownership, user pause/exit intent, source-generation fences, bounded caches and existing settings migration. Avoid replacing diagnosis with repeated delays, refreshes or retries.
 
 ## Validation and delivery
