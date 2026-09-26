@@ -2002,7 +2002,11 @@ class BottomActionBar extends StatelessWidget {
         if (PlatformUtils.isDesktopNotMac) OverlayVolumeControl(controller: controller),
         if (Platform.isWindows && controller.supportWindowFull && !GlobalPlayerState.to.isFullscreen.value)
           ExpandWindowButton(controller: controller),
-        if (!GlobalPlayerState.to.isWindowFullscreen.value) ExpandButton(controller: controller),
+        // The window-fill presentation keeps the fullscreen entry visible.
+        // Collapsing it left the expanded bar with no fullscreen action at
+        // all: "collapse player window" only restores the ordinary window, so
+        // the room could no longer reach immersive fullscreen from the bar.
+        ExpandButton(controller: controller),
       ],
     );
   }
