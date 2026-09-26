@@ -91,6 +91,43 @@ void main() {
       expect(config['filterDouyuSuspectedAutomatedMessages'], isFalse);
     });
 
+    test('defaults danmaku translation to off with a zero-config backend', () {
+      final config = DanmakuSettingsController.extractConfig({'danmaku': <String, dynamic>{}});
+
+      expect(config['enableDanmakuAutoTranslate'], isFalse);
+      expect(config['danmakuTranslateService'], 'google');
+      expect(config['danmakuTranslateTargetLang'], 'zh-CN');
+      expect(config['danmakuTranslateApiKey'], '');
+      expect(config['danmakuTranslateShowOriginal'], isTrue);
+    });
+
+    test('normalizes an unknown translation service or target language', () {
+      final config = DanmakuSettingsController.extractConfig({
+        'danmaku': {'danmakuTranslateService': 'someone-elses-api', 'danmakuTranslateTargetLang': 'xx-YY'},
+      });
+
+      expect(config['danmakuTranslateService'], 'google');
+      expect(config['danmakuTranslateTargetLang'], 'zh-CN');
+    });
+
+    test('preserves an explicit translation choice from backup', () {
+      final config = DanmakuSettingsController.extractConfig({
+        'danmaku': {
+          'enableDanmakuAutoTranslate': true,
+          'danmakuTranslateService': 'deepl',
+          'danmakuTranslateTargetLang': 'ja',
+          'danmakuTranslateApiKey': 'secret',
+          'danmakuTranslateShowOriginal': false,
+        },
+      });
+
+      expect(config['enableDanmakuAutoTranslate'], isTrue);
+      expect(config['danmakuTranslateService'], 'deepl');
+      expect(config['danmakuTranslateTargetLang'], 'ja');
+      expect(config['danmakuTranslateApiKey'], 'secret');
+      expect(config['danmakuTranslateShowOriginal'], isFalse);
+    });
+
     test('clamps the repeated-text merge window from imported settings', () {
       final short = DanmakuSettingsController.extractConfig({
         'danmaku': {'collapseRepeatedDanmaku': true, 'repeatedDanmakuWindowSeconds': 0},

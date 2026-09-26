@@ -12,6 +12,7 @@ import 'package:pure_live/common/global/platform_utils.dart';
 import 'package:pure_live/modules/live_play/states/ui_state.dart';
 import 'package:pure_live/modules/live_play/controllers/player_state.dart';
 import 'package:pure_live/modules/live_play/controllers/live_play_controller.dart';
+import 'package:pure_live/common/services/danmaku_translation_service.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_message_actions.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_arrival_counter.dart';
 import 'package:pure_live/modules/live_play/widgets/local_interaction/local_danmaku_style_editor.dart';
@@ -476,6 +477,9 @@ class DanmakuItem extends StatelessWidget {
 
     final textColor = isDark ? Colors.white70 : Colors.black87;
 
+    // 译文是辅助信息，配色必须弱于原文：误译时原文仍然主导这一行的阅读。
+    final translatedColor = isDark ? Colors.white60 : Colors.black54;
+
     return RepaintBoundary(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -512,6 +516,13 @@ class DanmakuItem extends StatelessWidget {
                       final remark = settings.danmaku.showDanmakuUserRemark.v
                           ? settings.fav.userRemark(platform, danmaku.userName)
                           : '';
+                      // 本行 widget 按消息对象缓存，译文异步到达时不会重建，所以
+                      // 必须订阅行级槽位；槽位先于译文建立时同样能收到后续结果。
+                      final translation = settings.danmaku.enableDanmakuAutoTranslate.v
+                          ? (DanmakuTranslationService.slotOrNull(danmaku.message)?.value ?? '')
+                          : '';
+                      final showOriginal = settings.danmaku.danmakuTranslateShowOriginal.v;
+                      final baseFontSize = AppTextStyles.t14.fontSize!;
                       return Text.rich(
                         TextSpan(
                           children: [
@@ -524,14 +535,34 @@ class DanmakuItem extends StatelessWidget {
                               text: "${danmaku.userName}: ",
                               style: AppTextStyles.t14.copyWith(fontWeight: FontWeight.w700, color: textColor),
                             ),
-                            TextSpan(
-                              children: parseEmojis(danmaku.message, AppTextStyles.t14.fontSize!, textColor),
-                              style: AppTextStyles.t14.copyWith(
-                                height: 1.45,
-                                fontWeight: FontWeight.w500,
-                                color: textColor,
+                            if (showOriginal || translation.isEmpty)
+                              TextSpan(
+                                children: parseEmojis(danmaku.message, baseFontSize, textColor),
+                                style: AppTextStyles.t14.copyWith(
+                                  height: 1.45,
+                                  fontWeight: FontWeight.w500,
+                                  color: textColor,
+                                ),
                               ),
-                            ),
+                            if (translation.isNotEmpty) ...[
+                              if (showOriginal) const TextSpan(text: '\n'),
+                              TextSpan(
+                                text: '译 ',
+                                style: AppTextStyles.t14.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: vibrantColor.withValues(alpha: 0.85),
+                                ),
+                              ),
+                              TextSpan(
+                                children: parseEmojis(translation, baseFontSize - 1, translatedColor),
+                                style: AppTextStyles.t14.copyWith(
+                                  fontSize: baseFontSize - 1,
+                                  height: 1.4,
+                                  fontWeight: FontWeight.w500,
+                                  color: translatedColor,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       );

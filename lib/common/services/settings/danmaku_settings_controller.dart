@@ -2,6 +2,7 @@ import 'package:pure_live/get/get.dart';
 import 'package:pure_live/common/services/utils/hive_rx.dart';
 import 'package:pure_live/common/models/app_refresh_rate_mode.dart';
 import 'package:pure_live/common/services/display_mode_service.dart';
+import 'package:pure_live/core/translation/danmaku_translator.dart';
 
 class DanmakuSettingsController extends GetxController {
   static const double defaultDanmakuTopArea = 0.0;
@@ -37,6 +38,41 @@ class DanmakuSettingsController extends GetxController {
   /// Private user remarks are a local recognition aid, so they are visible
   /// until the user explicitly hides them.
   static const bool defaultShowDanmakuUserRemark = true;
+
+  /// 弹幕翻译默认关闭。
+  ///
+  /// 开启后房间里的公开聊天内容会被发往第三方翻译服务，这必须由用户显式
+  /// 同意，不能跟随"进了国外平台房间"这类推断自动发生。
+  static const bool defaultEnableDanmakuAutoTranslate = false;
+
+  static const String defaultDanmakuTranslateService = danmakuTranslationServiceGoogle;
+
+  static const String defaultDanmakuTranslateTargetLang = 'zh-CN';
+
+  /// 默认保留原文：译文会误读人名、梗和反讽，原文必须仍在屏幕上。
+  static const bool defaultDanmakuTranslateShowOriginal = true;
+
+  static const List<String> supportedTranslateServices = <String>[
+    danmakuTranslationServiceGoogle,
+    danmakuTranslationServiceMyMemory,
+    danmakuTranslationServiceDeepL,
+    danmakuTranslationServiceYoudao,
+    danmakuTranslationServiceLibreTranslate,
+    danmakuTranslationServiceOpenAiCompatible,
+  ];
+
+  static const List<String> supportedTranslateTargets = <String>['zh-CN', 'zh-TW', 'en', 'ja'];
+
+  /// 只接受已知的后端标识。旧版本或手改过的配置不能把请求指向未知服务。
+  static String normalizeTranslateService(Object? value) {
+    final raw = value?.toString() ?? '';
+    return supportedTranslateServices.contains(raw) ? raw : defaultDanmakuTranslateService;
+  }
+
+  static String normalizeTranslateTarget(Object? value) {
+    final raw = value?.toString() ?? '';
+    return supportedTranslateTargets.contains(raw) ? raw : defaultDanmakuTranslateTargetLang;
+  }
 
   static int normalizeFontWeight(Object? value, {int fallback = 500}) {
     final raw = value is num ? value.toInt() : fallback;
@@ -111,6 +147,33 @@ class DanmakuSettingsController extends GetxController {
   final RxInt danmakuSimilarityThreshold = hiveInt('danmakuSimilarityThreshold', 85);
   final RxInt danmakuSimilarityCacheDuration = hiveInt('danmakuSimilarityCacheDuration', 3);
   final RxInt danmakuSimilarityMaxCacheSize = hiveInt('danmakuSimilarityMaxCacheSize', 100);
+
+  // 弹幕自动翻译。开启后非目标语言的聊天弹幕会被送往第三方翻译服务。
+  final RxBool enableDanmakuAutoTranslate = hiveBool(
+    'enableDanmakuAutoTranslate',
+    defaultEnableDanmakuAutoTranslate,
+  );
+  final RxString danmakuTranslateService = hiveString(
+    'danmakuTranslateService',
+    defaultDanmakuTranslateService,
+  );
+  final RxString danmakuTranslateTargetLang = hiveString(
+    'danmakuTranslateTargetLang',
+    defaultDanmakuTranslateTargetLang,
+  );
+  final RxString danmakuTranslateApiKey = hiveString('danmakuTranslateApiKey', '');
+  final RxBool danmakuTranslateShowOriginal = hiveBool(
+    'danmakuTranslateShowOriginal',
+    defaultDanmakuTranslateShowOriginal,
+  );
+
+  /// 自建后端的服务地址。默认空串：没填就不去猜地址，直接判定为不可用，
+  /// 避免把一个想当然的 localhost 请求打成静默失败。
+  final RxString danmakuTranslateEndpointUrl = hiveString('danmakuTranslateEndpointUrl', '');
+
+  /// OpenAI 兼容端点使用的模型名（Ollama 的模型 tag，例如 qwen2.5:7b）。
+  final RxString danmakuTranslateModelName = hiveString('danmakuTranslateModelName', '');
+
   @override
   void onInit() {
     super.onInit();
@@ -127,6 +190,8 @@ class DanmakuSettingsController extends GetxController {
     danmakuSimilarityThreshold.v = danmakuSimilarityThreshold.v.clamp(50, 100).toInt();
     danmakuSimilarityCacheDuration.v = danmakuSimilarityCacheDuration.v.clamp(1, 60).toInt();
     danmakuSimilarityMaxCacheSize.v = danmakuSimilarityMaxCacheSize.v.clamp(20, 1000).toInt();
+    danmakuTranslateService.v = normalizeTranslateService(danmakuTranslateService.v);
+    danmakuTranslateTargetLang.v = normalizeTranslateTarget(danmakuTranslateTargetLang.v);
     if (danmakuInteractionMigration.v < 1) {
       enableDanmakuTapInteraction.v = true;
       enableDanmakuLongPressInteraction.v = true;
@@ -222,6 +287,13 @@ class DanmakuSettingsController extends GetxController {
       'danmakuSimilarityThreshold': danmakuSimilarityThreshold.v,
       'danmakuSimilarityCacheDuration': danmakuSimilarityCacheDuration.v,
       'danmakuSimilarityMaxCacheSize': danmakuSimilarityMaxCacheSize.v,
+      'enableDanmakuAutoTranslate': enableDanmakuAutoTranslate.v,
+      'danmakuTranslateService': danmakuTranslateService.v,
+      'danmakuTranslateTargetLang': danmakuTranslateTargetLang.v,
+      'danmakuTranslateApiKey': danmakuTranslateApiKey.v,
+      'danmakuTranslateShowOriginal': danmakuTranslateShowOriginal.v,
+      'danmakuTranslateEndpointUrl': danmakuTranslateEndpointUrl.v,
+      'danmakuTranslateModelName': danmakuTranslateModelName.v,
     };
   }
 
@@ -309,6 +381,17 @@ class DanmakuSettingsController extends GetxController {
       'danmakuSimilarityMaxCacheSize': typed<int>(
         (json['danmakuSimilarityMaxCacheSize'] ?? 100).toInt().clamp(20, 1000).toInt(),
       ),
+      'enableDanmakuAutoTranslate': typed<bool>(
+        json['enableDanmakuAutoTranslate'] ?? defaultEnableDanmakuAutoTranslate,
+      ),
+      'danmakuTranslateService': typed<String>(normalizeTranslateService(json['danmakuTranslateService'])),
+      'danmakuTranslateTargetLang': typed<String>(normalizeTranslateTarget(json['danmakuTranslateTargetLang'])),
+      'danmakuTranslateApiKey': typed<String>(json['danmakuTranslateApiKey']?.toString() ?? ''),
+      'danmakuTranslateShowOriginal': typed<bool>(
+        json['danmakuTranslateShowOriginal'] ?? defaultDanmakuTranslateShowOriginal,
+      ),
+      'danmakuTranslateEndpointUrl': typed<String>(json['danmakuTranslateEndpointUrl']?.toString() ?? ''),
+      'danmakuTranslateModelName': typed<String>(json['danmakuTranslateModelName']?.toString() ?? ''),
     };
   }
 
@@ -354,6 +437,13 @@ class DanmakuSettingsController extends GetxController {
     danmakuSimilarityThreshold.v = parsed['danmakuSimilarityThreshold'];
     danmakuSimilarityCacheDuration.v = parsed['danmakuSimilarityCacheDuration'];
     danmakuSimilarityMaxCacheSize.v = parsed['danmakuSimilarityMaxCacheSize'];
+    enableDanmakuAutoTranslate.v = parsed['enableDanmakuAutoTranslate'];
+    danmakuTranslateService.v = parsed['danmakuTranslateService'];
+    danmakuTranslateTargetLang.v = parsed['danmakuTranslateTargetLang'];
+    danmakuTranslateApiKey.v = parsed['danmakuTranslateApiKey'];
+    danmakuTranslateShowOriginal.v = parsed['danmakuTranslateShowOriginal'];
+    danmakuTranslateEndpointUrl.v = parsed['danmakuTranslateEndpointUrl'];
+    danmakuTranslateModelName.v = parsed['danmakuTranslateModelName'];
   }
 
   static Map<String, dynamic> extractConfig(Map<String, dynamic>? rootConfig) {
@@ -432,6 +522,15 @@ class DanmakuSettingsController extends GetxController {
           .toInt()
           .clamp(20, 1000)
           .toInt(),
+      'enableDanmakuAutoTranslate':
+          danmaku['enableDanmakuAutoTranslate'] ?? defaultEnableDanmakuAutoTranslate,
+      'danmakuTranslateService': normalizeTranslateService(danmaku['danmakuTranslateService']),
+      'danmakuTranslateTargetLang': normalizeTranslateTarget(danmaku['danmakuTranslateTargetLang']),
+      'danmakuTranslateApiKey': danmaku['danmakuTranslateApiKey']?.toString() ?? '',
+      'danmakuTranslateShowOriginal':
+          danmaku['danmakuTranslateShowOriginal'] ?? defaultDanmakuTranslateShowOriginal,
+      'danmakuTranslateEndpointUrl': danmaku['danmakuTranslateEndpointUrl']?.toString() ?? '',
+      'danmakuTranslateModelName': danmaku['danmakuTranslateModelName']?.toString() ?? '',
     };
   }
 

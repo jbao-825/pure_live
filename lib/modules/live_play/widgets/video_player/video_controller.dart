@@ -27,6 +27,7 @@ import 'package:pure_live/modules/live_play/controllers/player_state.dart';
 import 'package:pure_live/modules/live_play/controllers/live_play_controller.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_message_actions.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_settings_binding.dart';
+import 'package:pure_live/common/services/danmaku_translation_service.dart';
 
 typedef AudioOnlyCallback = Future<void> Function(bool value);
 
@@ -175,6 +176,19 @@ class DanmakuManager {
     _settingsDirty = false;
   }
 
+  /// 该条弹幕真正上屏的文本。
+  ///
+  /// 飘屏与 PiP 都只有一行，而且发出后就不再改写，所以有译文时直接用译文；
+  /// "原文 + 译文"的双语显示只留给可以回看的弹幕列表。译文在投放前已由翻译
+  /// 服务写入缓存，所以这里是一次同步查表，不引入额外等待。
+  String _contentFor(LiveMessage msg, String remarkPrefix) {
+    final original = '$remarkPrefix${msg.message}';
+    if (msg.isLocal || !settingsService.danmaku.enableDanmakuAutoTranslate.v) return original;
+    final translated = DanmakuTranslationService.cachedTranslationOrNull(msg.message);
+    if (translated == null || translated.isEmpty) return original;
+    return '$remarkPrefix$translated';
+  }
+
   void sendDanmaku(LiveMessage msg, bool isPlaying, bool isCompactMode) {
     // A locally composed message is a UI interaction rather than a packet from
     // the live transport. Do not silently discard it while playback is still
@@ -193,7 +207,7 @@ class DanmakuManager {
     if (settings.enableDanmakuDisplay.v && !videoController.hideDanmaku.value) {
       controller.send(
         BarrageItem(
-          content: '$remarkPrefix${msg.message}',
+          content: _contentFor(msg, remarkPrefix),
           type: switch (localStyle?.placement) {
             LiveMessagePlacement.top => BarrageType.topFixed,
             LiveMessagePlacement.bottom => BarrageType.bottomFixed,
@@ -233,7 +247,7 @@ class DanmakuManager {
           : Color(settings.pipDanmakuColor.v);
       pipController.send(
         BarrageItem(
-          content: '$remarkPrefix${msg.message}',
+          content: _contentFor(msg, remarkPrefix),
           type: switch (localStyle?.placement) {
             LiveMessagePlacement.top => BarrageType.topFixed,
             LiveMessagePlacement.bottom => BarrageType.bottomFixed,

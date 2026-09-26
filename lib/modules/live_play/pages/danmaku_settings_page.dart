@@ -6,6 +6,8 @@ import 'package:pure_live/modules/settings/pages/pip_danmaku_settings_page.dart'
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_viewing_preset.dart';
 import 'package:pure_live/modules/live_play/widgets/danmaku/danmaku_settings_binding.dart';
 import 'package:pure_live/modules/live_play/widgets/local_interaction/local_interaction_controller.dart';
+import 'package:pure_live/core/translation/danmaku_translator.dart';
+import 'package:pure_live/common/services/danmaku_translation_service.dart';
 
 class DanmakuSettingsPage extends StatelessWidget {
   const DanmakuSettingsPage({super.key, required this.controller});
@@ -40,6 +42,16 @@ class DanmakuSettingsContent extends StatefulWidget {
 
 class _DanmakuSettingsContentState extends State<DanmakuSettingsContent> {
   late final ScrollController _scrollController;
+  late final TextEditingController _translateApiKeyController = TextEditingController(
+    text: SettingsService.to.danmaku.danmakuTranslateApiKey.v,
+  );
+  // lazy final：用户没选自建后端时这两行不会被求值，也就不会白建控制器。
+  late final TextEditingController _translateEndpointController = TextEditingController(
+    text: SettingsService.to.danmaku.danmakuTranslateEndpointUrl.v,
+  );
+  late final TextEditingController _translateModelController = TextEditingController(
+    text: SettingsService.to.danmaku.danmakuTranslateModelName.v,
+  );
 
   DanmakuSettingsBinding get controller => widget.controller;
 
@@ -52,6 +64,9 @@ class _DanmakuSettingsContentState extends State<DanmakuSettingsContent> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _translateApiKeyController.dispose();
+    _translateEndpointController.dispose();
+    _translateModelController.dispose();
     super.dispose();
   }
 
@@ -427,6 +442,105 @@ class _DanmakuSettingsContentState extends State<DanmakuSettingsContent> {
             ],
           ),
           const SizedBox(height: 20),
+          context.buildGroupTitle(i18n('danmaku_translation')),
+          const SizedBox(height: 8),
+          reactiveCard(
+            () => [
+              _switch(
+                theme,
+                title: i18n('danmaku_auto_translate'),
+                subtitle: i18n('danmaku_auto_translate_desc'),
+                value: SettingsService.to.danmaku.enableDanmakuAutoTranslate.v,
+                onChanged: (v) => SettingsService.to.danmaku.enableDanmakuAutoTranslate.v = v,
+                labelColor: labelColor,
+                subtitleColor: labelColor,
+              ),
+              if (SettingsService.to.danmaku.enableDanmakuAutoTranslate.v) ...[
+                _choices(
+                  theme,
+                  title: i18n('danmaku_translate_service'),
+                  value: SettingsService.to.danmaku.danmakuTranslateService.v,
+                  options: [
+                    (value: danmakuTranslationServiceGoogle, label: i18n('danmaku_translate_service_google')),
+                    (value: danmakuTranslationServiceMyMemory, label: i18n('danmaku_translate_service_mymemory')),
+                    (value: danmakuTranslationServiceDeepL, label: i18n('danmaku_translate_service_deepl')),
+                    (value: danmakuTranslationServiceYoudao, label: i18n('danmaku_translate_service_youdao')),
+                    (value: danmakuTranslationServiceLibreTranslate, label: i18n('danmaku_translate_service_libre')),
+                    (value: danmakuTranslationServiceOpenAiCompatible, label: i18n('danmaku_translate_service_openai')),
+                  ],
+                  onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateService.v = v,
+                  labelColor: labelColor,
+                ),
+                // 两个自建后端共用"服务地址"。地址留空时服务层直接放行，既不
+                // 打无效请求，也不会被误计成服务故障。
+                if (danmakuTranslationNeedsEndpoint(SettingsService.to.danmaku.danmakuTranslateService.v))
+                  _textField(
+                    controller: _translateEndpointController,
+                    label: i18n('danmaku_translate_endpoint'),
+                    hint:
+                        SettingsService.to.danmaku.danmakuTranslateService.v ==
+                            danmakuTranslationServiceLibreTranslate
+                        ? danmakuTranslationDefaultLibreEndpoint
+                        : danmakuTranslationDefaultOpenAiEndpoint,
+                    onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateEndpointUrl.v = v.trim(),
+                  ),
+                // 有道的限流是实测出来的真实约束，先说清楚，别让用户以为功能坏了。
+                if (SettingsService.to.danmaku.danmakuTranslateService.v == danmakuTranslationServiceYoudao)
+                  _hintText(i18n('danmaku_translate_youdao_hint')),
+                // 这两个后端的性格差别很大（一个快但口语不行，一个慢但更懂人话），
+                // 把实测结论摆在选项旁边，别等用户翻出一堆怪句子才发现。
+                if (danmakuTranslationNeedsEndpoint(SettingsService.to.danmaku.danmakuTranslateService.v))
+                  _hintText(
+                    SettingsService.to.danmaku.danmakuTranslateService.v ==
+                            danmakuTranslationServiceLibreTranslate
+                        ? i18n('danmaku_translate_libre_hint')
+                        : i18n('danmaku_translate_openai_hint'),
+                  ),
+                if (SettingsService.to.danmaku.danmakuTranslateService.v ==
+                    danmakuTranslationServiceOpenAiCompatible)
+                  _textField(
+                    controller: _translateModelController,
+                    label: i18n('danmaku_translate_model'),
+                    hint: i18n('danmaku_translate_model_hint'),
+                    onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateModelName.v = v.trim(),
+                  ),
+                // DeepL 必需、自建实例可选（本地服务通常不需要密钥）。
+                if (SettingsService.to.danmaku.danmakuTranslateService.v != danmakuTranslationServiceGoogle &&
+                    SettingsService.to.danmaku.danmakuTranslateService.v != danmakuTranslationServiceMyMemory)
+                  _textField(
+                    controller: _translateApiKeyController,
+                    label: i18n('danmaku_translate_api_key'),
+                    hint: i18n('danmaku_translate_api_key_hint'),
+                    obscure: true,
+                    onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateApiKey.v = v.trim(),
+                  ),
+                _choices(
+                  theme,
+                  title: i18n('danmaku_translate_target'),
+                  value: SettingsService.to.danmaku.danmakuTranslateTargetLang.v,
+                  options: [
+                    (value: 'zh-CN', label: i18n('danmaku_translate_target_zh_cn')),
+                    (value: 'zh-TW', label: i18n('danmaku_translate_target_zh_tw')),
+                    (value: 'en', label: i18n('danmaku_translate_target_en')),
+                    (value: 'ja', label: i18n('danmaku_translate_target_ja')),
+                  ],
+                  onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateTargetLang.v = v,
+                  labelColor: labelColor,
+                ),
+                _switch(
+                  theme,
+                  title: i18n('danmaku_translate_keep_original'),
+                  subtitle: i18n('danmaku_translate_keep_original_desc'),
+                  value: SettingsService.to.danmaku.danmakuTranslateShowOriginal.v,
+                  onChanged: (v) => SettingsService.to.danmaku.danmakuTranslateShowOriginal.v = v,
+                  labelColor: labelColor,
+                  subtitleColor: labelColor,
+                ),
+                _translationStatus(),
+              ],
+            ],
+          ),
+          const SizedBox(height: 20),
 
           if (widget.includePipSettings) ...[
             const PipDanmakuSettingsSection(),
@@ -659,5 +773,118 @@ class _DanmakuSettingsContentState extends State<DanmakuSettingsContent> {
         onChanged: onChanged,
       ),
     );
+  }
+
+  /// 一组互斥选项。沿用模板区已有的 ChoiceChip 观感，避免引入第二套选择控件。
+  Widget _choices(
+    ThemeData theme, {
+    required String title,
+    required String value,
+    required List<({String value, String label})> options,
+    required ValueChanged<String> onChanged,
+    required Color labelColor,
+  }) {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: isEmbedded ? 14 : 16, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: AppTextStyles.t15.copyWith(fontWeight: FontWeight.w600, color: labelColor)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: isEmbedded ? 6 : 8,
+            runSpacing: isEmbedded ? 6 : 8,
+            children: [
+              for (final option in options)
+                ChoiceChip(
+                  selected: option.value == value,
+                  showCheckmark: false,
+                  backgroundColor: isEmbedded
+                      ? theme.colorScheme.surface
+                      : theme.colorScheme.surfaceContainerHighest,
+                  selectedColor: theme.colorScheme.primary,
+                  side: BorderSide(color: theme.colorScheme.outline.withValues(alpha: 0.35)),
+                  visualDensity: isEmbedded ? VisualDensity.compact : VisualDensity.standard,
+                  materialTapTargetSize: isEmbedded
+                      ? MaterialTapTargetSize.shrinkWrap
+                      : MaterialTapTargetSize.padded,
+                  labelStyle: TextStyle(
+                    fontSize: isEmbedded ? 12 : 13,
+                    fontWeight: FontWeight.w600,
+                    color: option.value == value ? theme.colorScheme.onPrimary : theme.colorScheme.onSurface,
+                  ),
+                  label: Text(option.label),
+                  onSelected: (_) => onChanged(option.value),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 一行文本配置。自建地址、模型名、API key 共用同一种呈现。
+  Widget _textField({
+    required TextEditingController controller,
+    required String label,
+    String? hint,
+    bool obscure = false,
+    required ValueChanged<String> onChanged,
+  }) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(isEmbedded ? 14 : 16, 4, isEmbedded ? 14 : 16, 10),
+      child: TextField(
+        controller: controller,
+        obscureText: obscure,
+        decoration: InputDecoration(
+          isDense: true,
+          border: const OutlineInputBorder(),
+          labelText: label,
+          hintText: hint,
+        ),
+        // 直接落库：这些都是填一次的配置，不需要额外的保存按钮。
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  /// 一段说明文字。用来把实测出来的能力边界直接摆在选项旁边，而不是等用户
+  /// 用了之后自己发现翻译质量不对劲。
+  Widget _hintText(String text) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(isEmbedded ? 14 : 16, 0, isEmbedded ? 14 : 16, 10),
+      child: Text(
+        text,
+        style: theme.textTheme.bodySmall?.copyWith(height: 1.4, color: theme.colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+
+  /// 翻译连续失败时的可见提示。
+  ///
+  /// 翻译服务失效时弹幕会安静地退回原文，如果不给出提示，用户只会认为"这个
+  /// 功能没生效"，所以熔断状态必须能被看见。
+  Widget _translationStatus() {
+    final slot = DanmakuTranslationService.errorSlotOrNull();
+    if (slot == null) return const SizedBox.shrink();
+    return Obx(() {
+      if (slot.value.isEmpty) return const SizedBox.shrink();
+      return Padding(
+        padding: EdgeInsets.fromLTRB(isEmbedded ? 14 : 16, 2, isEmbedded ? 14 : 16, 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline_rounded, size: 16, color: theme.colorScheme.error),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                i18n('danmaku_translate_unavailable', args: {'seconds': '${DanmakuTranslationService.circuitCooldown.inSeconds}'}),
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
   }
 }

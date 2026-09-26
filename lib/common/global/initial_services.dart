@@ -15,6 +15,7 @@ import 'package:pure_live/recorder/pages/recorder/recorder_controller.dart';
 import 'package:pure_live/core/iptv/services/channel_detail_controller.dart';
 import 'package:pure_live/recorder/pages/record_settings/record_settings_controller.dart';
 import 'package:pure_live/modules/live_play/widgets/local_interaction/local_interaction_controller.dart';
+import 'package:pure_live/common/services/danmaku_translation_service.dart';
 
 class InitialServices {
   static void initGlobalServices() {
@@ -27,6 +28,9 @@ class InitialServices {
     Get.put(IptvSettingsController(), permanent: true);
     Get.put(LocalInteractionController(), permanent: true);
     Get.put(RouteObserverController(), permanent: true);
+    // 译文缓存跨房间存活，所以它跟随全局服务注册而不是挂在房间会话上。
+    // 它在 onInit 里不读取设置控制器，避免冷启动阶段的依赖容器重入。
+    Get.put(DanmakuTranslationService(), permanent: true);
   }
 
   static void initLazyControllers() {

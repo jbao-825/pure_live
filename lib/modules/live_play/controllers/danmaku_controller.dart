@@ -5,8 +5,10 @@ import 'package:pure_live/core/common/core_log.dart';
 import 'package:pure_live/core/interface/live_danmaku.dart';
 import 'package:pure_live/core/danmaku/empty_danmaku.dart';
 import 'package:pure_live/modules/live_play/states/live_play_state.dart';
+import 'package:pure_live/common/services/danmaku_translation_service.dart';
 import 'package:pure_live/modules/live_play/controllers/danmaku_message_gate.dart';
 import 'package:pure_live/modules/live_play/controllers/danmaku_session_host.dart';
+import 'package:pure_live/modules/live_play/controllers/danmaku_translation_gate.dart';
 import 'package:pure_live/modules/live_play/controllers/repeated_danmaku_filter.dart';
 import 'package:pure_live/modules/live_play/controllers/danmaku_similarity_filter.dart';
 
@@ -31,6 +33,13 @@ class DanmakuController extends GetxController {
   final DanmakuMessageGate _messageGate = DanmakuMessageGate();
   final RepeatedDanmakuFilter _repeatedMessageFilter = RepeatedDanmakuFilter();
   final DanmakuSimilarityFilter _similarityFilter = DanmakuSimilarityFilter();
+
+  /// 翻译闸门。翻译是异步的，而投放必须保序、且绝不能被翻译卡住，所以投放
+  /// 统一下沉到这里，由它决定是立刻投还是等一批译文一起投。
+  late final DanmakuTranslationGate _translationGate = DanmakuTranslationGate(
+    translate: (texts) => DanmakuTranslationService.to.translateBatch(texts),
+    deliver: _deliverToRoom,
+  );
 
   LiveDanmaku? _liveDanmaku;
   Future<void> _operationTail = Future<void>.value();
@@ -212,8 +221,7 @@ class DanmakuController extends GetxController {
           _maskedNameNoticeShown = true;
           _addStatusMessage(i18n('bilibili_guest_name_masked'));
         }
-        _main.addDanmakuMessage(msg);
-        _state.player.videoController?.sendDanmaku(msg);
+        _translationGate.submit(msg);
       } else if (msg.type == LiveMessageType.online) {
         _main.updateRuntimeAudience(msg.data);
       } else if (msg.type == LiveMessageType.superChat) {
@@ -247,6 +255,16 @@ class DanmakuController extends GetxController {
 
   bool _acceptsCallback(LiveDanmaku engine, String key, int token) {
     return token == _sessionToken && identical(_liveDanmaku, engine) && (_sessionKey == key || _connectingKey == key);
+  }
+
+  /// 把一条已完成翻译尝试的弹幕交给列表与飘屏。
+  ///
+  /// 译文不写进消息对象：`LiveMessage` 是不可变且按 identity 比较的模型，给
+  /// 它加字段会波及所有平台的构造点。渲染层改为按文本向翻译服务查表，同一
+  /// 条消息因此既可以是原文也可以是译文，而模型保持不变。
+  void _deliverToRoom(LiveMessage message) {
+    _main.addDanmakuMessage(message);
+    _state.player.videoController?.sendDanmaku(message);
   }
 
   bool _isBlocked(LiveMessage message) {
@@ -299,6 +317,9 @@ class DanmakuController extends GetxController {
     _sessionKey = null;
     _connectingKey = null;
     _main.updateDanmakuRoomId(null);
+    // 断开意味着房间上下文已经结束：队列里等待翻译的消息属于上一个房间，
+    // 不能在切换之后才追加到新房间的列表里。
+    _translationGate.clear();
     if (clearRenderer) _main.clearRenderedDanmaku();
     if (engine == null) return;
     _detachCallbacks(engine);
@@ -375,6 +396,7 @@ class DanmakuController extends GetxController {
     _messageGate.clear();
     _repeatedMessageFilter.clear();
     _similarityFilter.clear();
+    _translationGate.clear();
     _requestEpoch++;
     _sessionToken++;
     final engine = _liveDanmaku;
